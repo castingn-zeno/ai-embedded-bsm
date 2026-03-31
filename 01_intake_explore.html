@@ -1,0 +1,1790 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>BSM - 01 구매 알아보기 (Intake Explore v9.2)</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { font-family: 'Pretendard Variable', Pretendard, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; }
+  #root { width: 100%; min-height: 100vh; }
+</style>
+</head>
+<body>
+<div id="root"></div>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.9/babel.min.js"></script>
+<script type="text/babel">
+const { useState, useRef, useEffect, useCallback, useMemo } = React;
+
+
+
+/* ═══════════════════════════════════════════════════════════════
+   AI-Embedded BSM LITE — 구매 알아보기 (요청자 화면)
+   bsm_lite_explore.jsx v9.1 — BT(11)×GT(35) 2-Layer + L3 품목별 메시지
+   ─── Canonical Alignment ───
+   A-Series: A01 Intake Conversation Agent (Registry v1.0 §4.1.1)
+   T-Series: T01 Navigation Analysis + T02 Category Classification
+   State: 5-State (Freeze v1.1 §2.3) — READY → IN_PROGRESS
+   ─── Layer Design ───
+   BT Primary Layer: WHO — 역할·접근권한·위반코드
+   GT Secondary Layer: HOW — 소싱전략·자동화·Compliance
+   L3 Message Layer: 152개 품목별 개별 안내 (Sheet⑤ 원본)
+   v9.1: L3_MSG 152개 + Intake Spec v3.0 정합 + Audit 확장 + UX 개선 품목별 메시지·액션버튼·SLA·주관부서 적용
+         BT가 질문 자체를 바꿈 — "총무팀에서 처리합니다. 수량만 알려주세요"
+   Input:  사용자 자연어 입력
+   Output: navResult { gtCode, route, category, confidence, contract, rawText } → 10
+   역할: 김형주 과장 (구매 요청자)
+   ═══════════════════════════════════════════════════════════════ */
+
+// Intake Spec v3.0 §7.2: GT코드·Confidence% 사용자 비노출
+// 프로덕션 배포 시 false로 변경
+var DEV_MODE=true;
+
+/* ═══════════════════════════════════════════════════════════════
+   Audit Trail — execution_event_log (Append-Only)
+   DB Schema v1.1 §4.1.2 / Audit Trail Data Model v1.1
+   프로덕션: POST /evidence/log-execution API 연동
+   프로토타입: 콘솔 로그 + auditTrail 배열 누적
+   ═══════════════════════════════════════════════════════════════ */
+var auditTrail=[];
+function logEvent(evt){
+  var entry={
+    event_id:crypto.randomUUID?crypto.randomUUID():("evt-"+Date.now()+"-"+Math.random().toString(36).slice(2,8)),
+    screen:"explore",
+    timestamp:new Date().toISOString(),
+    previous_state:evt.from||null,
+    new_state:evt.to||null,
+    trigger_source:evt.trigger||"user",
+    engine_code:evt.engine||"A01",
+    event_type:evt.type||"state_transition",
+    payload:evt.payload||null,
+  };
+  auditTrail.push(entry);
+  if(DEV_MODE)console.log("[AUDIT:explore]",entry.event_type,entry.previous_state,"→",entry.new_state,entry.payload?JSON.stringify(entry.payload).slice(0,80):"");
+}
+
+var T={
+  state:{ready:{bg:"#F1F5F9",fg:"#475569",accent:"#64748B",border:"#CBD5E1"},progress:{bg:"#EFF6FF",fg:"#1E40AF",accent:"#3B82F6",border:"#93C5FD"},review:{bg:"#FFFBEB",fg:"#92400E",accent:"#F59E0B",border:"#FCD34D"},blocked:{bg:"#FEF2F2",fg:"#991B1B",accent:"#EF4444",border:"#FCA5A5"},complete:{bg:"#F0FDF4",fg:"#166534",accent:"#22C55E",border:"#86EFAC"}},
+  brand:"#1E3A8A",brandLt:"#2563EB",surface:"#FFFFFF",surfAlt:"#F8FAFC",
+  text:{primary:"#0F172A",secondary:"#475569",muted:"#64748B"},
+  border:{light:"#E2E8F0",medium:"#CBD5E1",focus:"#3B82F6"},
+  radius:{sm:6,md:10,lg:14,xl:20,full:9999},
+  shadow:{sm:"0 1px 2px rgba(0,0,0,.05)",md:"0 4px 12px rgba(0,0,0,.08)",overlay:"0 24px 80px rgba(0,0,0,.35)"},
+  font:{sans:"'Pretendard Variable',Pretendard,-apple-system,sans-serif"},
+};
+
+function Badge({children,color,bg}){return <span style={{display:"inline-block",fontSize:11,fontWeight:600,padding:"2px 8px",borderRadius:T.radius.full,color,background:bg}}>{children}</span>;}
+function AiAvatar({v}){var bg=v==="done"?T.state.complete.accent:v==="blocked"?T.state.blocked.accent:v==="thinking"?"linear-gradient(135deg,#1E3A8A,#3B82F6)":"linear-gradient(135deg,"+T.brand+","+T.brandLt+")";return <div style={{width:32,height:32,borderRadius:12,background:bg,display:"flex",alignItems:"center",justifyContent:"center",fontSize:v==="done"?14:v==="blocked"?14:10,color:"#FFF",fontWeight:700,flexShrink:0,boxShadow:T.shadow.sm}}>{v==="done"?"✓":v==="blocked"?"⛔":v==="thinking"?"A01":"AI"}</div>;}
+
+
+/* ═══════════════════════════════════════════════════════════════
+   G01~G35 GuideType Registry (Library v1.2 정본)
+   ═══════════════════════════════════════════════════════════════ */
+var GT_REGISTRY={
+  // ── 4.1 Catalog 기반 구매 ──
+  G01:{code:"G01",name:"Standard Catalog Purchase",label:"카탈로그 주문",uxGroup:"catalog",tier:"Oper"},
+  G02:{code:"G02",name:"Internal Catalog Purchase",label:"내부 카탈로그 구매",uxGroup:"catalog",tier:"Oper"},
+  G03:{code:"G03",name:"Contract Catalog Purchase",label:"계약 카탈로그 구매",uxGroup:"catalog",tier:"Oper"},
+  G04:{code:"G04",name:"Framework Catalog Purchase",label:"장기계약 카탈로그",uxGroup:"catalog",tier:"Oper"},
+  G05:{code:"G05",name:"Vendor Managed Catalog",label:"공급사 관리 카탈로그",uxGroup:"catalog",tier:"Oper"},
+  // ── 4.2 Standard PR 구매 ──
+  G06:{code:"G06",name:"Standard Purchase Request",label:"일반 구매요청",uxGroup:"general_pr",tier:"Oper"},
+  G07:{code:"G07",name:"Budget Controlled Purchase",label:"예산 통제 구매",uxGroup:"general_pr",tier:"Oper"},
+  G08:{code:"G08",name:"Department Purchase",label:"부서 요청 구매",uxGroup:"general_pr",tier:"Oper"},
+  G09:{code:"G09",name:"Recurring Purchase",label:"반복 구매",uxGroup:"catalog",tier:"Oper"},
+  G10:{code:"G10",name:"Small Value Purchase",label:"소액 구매",uxGroup:"catalog",tier:"Oper"},
+  // ── 4.3 RFQ 경쟁 구매 ──
+  G11:{code:"G11",name:"RFQ Standard",label:"일반 경쟁 견적",uxGroup:"rfq",tier:"Oper"},
+  G12:{code:"G12",name:"Limited RFQ",label:"제한 경쟁 견적",uxGroup:"rfq",tier:"Oper"},
+  G13:{code:"G13",name:"Strategic RFQ",label:"전략 품목 경쟁",uxGroup:"rfq",tier:"Strat"},
+  G14:{code:"G14",name:"Reverse Auction",label:"역경매",uxGroup:"rfq",tier:"Strat"},
+  G15:{code:"G15",name:"Multi-round RFQ",label:"다단계 견적",uxGroup:"rfq",tier:"Strat"},
+  // ── 4.4 계약 기반 구매 ──
+  G16:{code:"G16",name:"Contract Purchase",label:"기존 계약 발주",uxGroup:"contract",tier:"Oper"},
+  G17:{code:"G17",name:"Framework Contract Purchase",label:"장기 계약 발주",uxGroup:"contract",tier:"Oper"},
+  G18:{code:"G18",name:"Service Contract Purchase",label:"서비스 계약 발주",uxGroup:"contract",tier:"Oper"},
+  G19:{code:"G19",name:"Rental / Lease Purchase",label:"렌탈/리스 신청",uxGroup:"rental",tier:"Oper"},
+  G20:{code:"G20",name:"Subscription Purchase",label:"구독 신청",uxGroup:"subscription",tier:"Oper"},
+  // ── 4.5 서비스 구매 ──
+  G21:{code:"G21",name:"General Service Procurement",label:"일반 서비스 구매",uxGroup:"service",tier:"Oper"},
+  G22:{code:"G22",name:"Maintenance Service",label:"유지보수 서비스",uxGroup:"service",tier:"Oper"},
+  G23:{code:"G23",name:"Facility Management Service",label:"시설관리 서비스",uxGroup:"service",tier:"Strat"},
+  G24:{code:"G24",name:"Professional Service",label:"전문 서비스",uxGroup:"service",tier:"Strat"},
+  G25:{code:"G25",name:"Project Service Procurement",label:"프로젝트 서비스",uxGroup:"service",tier:"Strat"},
+  // ── 4.6 IT / 디지털 구매 ──
+  G26:{code:"G26",name:"Software Purchase",label:"소프트웨어 구매",uxGroup:"general_pr",tier:"Oper"},
+  G27:{code:"G27",name:"SaaS Subscription",label:"SaaS 구독",uxGroup:"subscription",tier:"Oper"},
+  G28:{code:"G28",name:"Cloud Service Procurement",label:"클라우드 서비스",uxGroup:"subscription",tier:"Strat"},
+  G29:{code:"G29",name:"IT Maintenance Service",label:"IT 유지보수",uxGroup:"service",tier:"Oper"},
+  G30:{code:"G30",name:"Digital Service Procurement",label:"디지털 서비스",uxGroup:"service",tier:"Strat"},
+  // ── 4.7 Special GuideType (5) ──
+  G31:{code:"G31",name:"Emergency Purchase",label:"긴급 구매",uxGroup:"emergency",tier:"Exc"},
+  G32:{code:"G32",name:"Sole Supplier Purchase",label:"단일 공급사 구매",uxGroup:"special",tier:"Exc"},
+  G33:{code:"G33",name:"Asset / CAPEX Purchase",label:"자산 취득 구매",uxGroup:"strategic",tier:"Exc"},
+  G34:{code:"G34",name:"Strategic Procurement",label:"전략 구매",uxGroup:"strategic",tier:"Strat"},
+  G35:{code:"G35",name:"Special Approval Procurement",label:"특별 승인 구매",uxGroup:"special",tier:"Exc"},
+};
+
+
+/* ═══════════════════════════════════════════════════════════════
+   BT 11종 (Primary Layer) — 역할·접근권한·위반코드
+   WHO: 누가 PR/PO를 작성할 수 있는가
+   통합분류체계: BT가 "경로"를 결정 → GT가 "방법"을 결정
+   ═══════════════════════════════════════════════════════════════ */
+var BT_META={
+  "BT-A":{code:"BT-A",name:"카탈로그 직접발주",icon:"🛒",prAllowed:false,ownerDept:null,
+    access:"카탈로그 직접 발주 (PR 불필요)",principle:"원칙1",
+    violCodes:["VIOL-C01: 카탈로그 외 직접발주 차단","VIOL-P04: 납품지 개인주소 차단"],
+    userMsg:"BSM 카탈로그에서 바로 주문하세요!"},
+  "BT-B":{code:"BT-B",name:"주관부서 카탈로그발주",icon:"🏢",prAllowed:false,ownerDept:"주관부서",
+    access:"주관부서 메뉴에서 신청 (PR 작성 불가)",principle:"원칙3",
+    violCodes:["VIOL-MD01: 개인 직접발주 차단","VIOL-MD10: 승인번호 누락 차단","VIOL-MD13: 세금계산서 누락"],
+    userMsg:"주관부서 메뉴에서 신청해 주세요. PR 직접 작성은 불가합니다."},
+  "BT-C":{code:"BT-C",name:"주관부서 계약발주",icon:"📋",prAllowed:false,ownerDept:"주관부서",
+    access:"BSM 이용신청 (PR 작성 불가)",principle:"원칙3",
+    violCodes:["VIOL-MD01: PR 작성 시도 차단","VIOL-MD10: 승인번호 누락 차단","VIOL-MD12: 주관검수 미확인"],
+    userMsg:"주관부서에 이용 신청해 주세요. PR 직접 작성은 불가합니다."},
+  "BT-D":{code:"BT-D",name:"주관부서 경유소싱",icon:"🔍",prAllowed:false,ownerDept:"주관부서+구매팀",
+    access:"BSM 지원신청 (PR 작성 불가)",principle:"원칙3",
+    violCodes:["VIOL-MD01: PR 차단","VIOL-MD03: 미승인 소싱","VIOL-MD10: 승인번호 누락"],
+    userMsg:"주관부서에 지원 요청해 주세요. 주관부서+구매팀이 소싱합니다."},
+  "BT-E":{code:"BT-E",name:"일반 경쟁견적",icon:"📊",prAllowed:true,ownerDept:null,
+    access:"PR 직접 작성 가능",principle:"원칙2",
+    violCodes:["VIOL-C10: 특정업체 단독 지정","VIOL-S10: 3개사 미충족","VIOL-C11: 사양서 브랜드 단독"],
+    userMsg:"구매요청서(PR)를 작성해 주세요. 소싱팀에서 3사+ 경쟁 견적을 진행합니다."},
+  "BT-F":{code:"BT-F",name:"대형 경쟁입찰",icon:"🏗️",prAllowed:true,ownerDept:null,
+    access:"PR 직접 작성 + CAPEX 승인서 필수",principle:"원칙2",
+    violCodes:["VIOL-C20: CAPEX 미승인 발주","VIOL-C21: 평가위원회 미구성","VIOL-S20: 입찰 2개사 미달"],
+    userMsg:"구매요청서+CAPEX 승인서를 작성해 주세요. 평가위원회 필수입니다."},
+  "BT-G":{code:"BT-G",name:"수의계약",icon:"🤝",prAllowed:true,ownerDept:null,
+    access:"PR+수의사유서 작성",principle:"원칙2",
+    violCodes:["VIOL-C30: 수의 사유 미흡","VIOL-C32: 연간 3회 초과","VIOL-S30: 원가분석 미실시"],
+    userMsg:"구매요청서+수의사유서를 작성해 주세요. 연간 동일업체 3회 한도입니다."},
+  "BT-H":{code:"BT-H",name:"장기 단가계약",icon:"📄",prAllowed:true,ownerDept:null,
+    access:"PR+단가계약번호 기재",principle:"원칙2",
+    violCodes:["VIOL-C40: 계약번호 미기재","VIOL-C41: 한도 초과 발주","VIOL-S40: 단가 상이"],
+    userMsg:"구매요청서에 단가계약번호를 기재해 주세요. 계약 한도 내 발주입니다."},
+  "BT-I":{code:"BT-I",name:"프로젝트 발주",icon:"🚀",prAllowed:true,ownerDept:null,
+    access:"PR+SOW 작성",principle:"원칙2",
+    violCodes:["VIOL-C50: SOW 미첨부","VIOL-P51: 기성 미검증 지급","VIOL-S50: NDA 미체결"],
+    userMsg:"구매요청서+SOW를 작성해 주세요. NDA 체결 후 RFP를 진행합니다."},
+  "BT-J":{code:"BT-J",name:"구독·렌탈",icon:"🔄",prAllowed:"conditional",ownerDept:null,
+    access:"기존계약 있으면 PO직접, 없으면 PR 작성",principle:"원칙2",
+    violCodes:["VIOL-C60: 중복 구독 차단","VIOL-C61: IT보안 미승인 차단","VIOL-PR01: 기존계약 미확인"],
+    userMsg:"먼저 기존 계약을 검색하세요. 있으면 바로 PO, 없으면 PR 작성입니다."},
+  "BT-K":{code:"BT-K",name:"긴급 구매",icon:"🚨",prAllowed:true,ownerDept:null,
+    access:"긴급코드 선택+구두승인자 기재",principle:"예외",
+    violCodes:["VIOL-C70: 긴급 사유 미흡","VIOL-C71: 48h 내 사후결재 미완","VIOL-A70: 월 5회 초과"],
+    userMsg:"긴급 구매로 즉시 처리합니다. 48시간 내 사후결재 필수입니다."},
+};
+
+var L3_TO_BT={
+  "L3-010101":"BT-A","L3-010102":"BT-C","L3-010103":"BT-J","L3-010201":"BT-A","L3-010301":"BT-B",
+  "L3-010302":"BT-E","L3-010303":"BT-J","L3-010401":"BT-B",
+  "L3-020101":"BT-C","L3-020102":"BT-C","L3-020103":"BT-C","L3-020104":"BT-C","L3-020105":"BT-C",
+  "L3-020106":"BT-C","L3-020107":"BT-C","L3-020201":"BT-C","L3-020202":"BT-C","L3-020203":"BT-B",
+  "L3-020301":"BT-E","L3-020302":"BT-H","L3-020401":"BT-G",
+  "L3-030101":"BT-D","L3-030102":"BT-D","L3-030103":"BT-D","L3-030104":"BT-C","L3-030105":"BT-D",
+  "L3-030106":"BT-D","L3-030201":"BT-C","L3-030202":"BT-C","L3-030203":"BT-C","L3-030204":"BT-C",
+  "L3-030205":"BT-C","L3-030301":"BT-B","L3-030302":"BT-B","L3-030303":"BT-B","L3-030401":"BT-C",
+  "L3-040101":"BT-C","L3-040102":"BT-C","L3-040201":"BT-C","L3-040202":"BT-C","L3-040203":"BT-G",
+  "L3-050101":"BT-C","L3-050201":"BT-C","L3-050301":"BT-C","L3-050401":"BT-H","L3-050501":"BT-C",
+  "L3-050601":"BT-E","L3-050701":"BT-C","L3-050702":"BT-C","L3-050801":"BT-H",
+  "L3-060101":"BT-D","L3-060201":"BT-D","L3-060202":"BT-F","L3-060203":"BT-G","L3-060301":"BT-G",
+  "L3-060302":"BT-C","L3-060401":"BT-H",
+  "L3-070101":"BT-D","L3-070201":"BT-D","L3-070202":"BT-D","L3-070203":"BT-D","L3-070204":"BT-J",
+  "L3-070301":"BT-D","L3-070302":"BT-D","L3-070303":"BT-D","L3-070304":"BT-D",
+  "L3-070401":"BT-D","L3-070402":"BT-D","L3-070403":"BT-D","L3-070404":"BT-D",
+  "L3-070501":"BT-D","L3-070502":"BT-D","L3-070503":"BT-A","L3-070504":"BT-D","L3-070505":"BT-D",
+  "L3-070601":"BT-D","L3-070701":"BT-E","L3-070702":"BT-J",
+  "L3-080101":"BT-F","L3-080102":"BT-F","L3-080201":"BT-B","L3-080202":"BT-B",
+  "L3-080301":"BT-F","L3-080302":"BT-C","L3-080401":"BT-B","L3-080402":"BT-C","L3-080403":"BT-B",
+  "L3-080404":"BT-J","L3-080405":"BT-J","L3-080501":"BT-C","L3-080502":"BT-H","L3-080503":"BT-F",
+  "L3-080601":"BT-D","L3-080602":"BT-H","L3-080701":"BT-D","L3-080702":"BT-D","L3-080703":"BT-C",
+  "L3-090101":"BT-H","L3-090102":"BT-H","L3-090103":"BT-H","L3-090104":"BT-H",
+  "L3-090201":"BT-H","L3-090202":"BT-H","L3-090203":"BT-H",
+  "L3-090301":"BT-H","L3-090302":"BT-H","L3-090303":"BT-H",
+  "L3-090401":"BT-H","L3-090402":"BT-H","L3-090403":"BT-H","L3-090404":"BT-H",
+  "L3-090501":"BT-H","L3-090502":"BT-H","L3-090503":"BT-H","L3-090504":"BT-H",
+  "L3-090601":"BT-J","L3-090602":"BT-F","L3-090603":"BT-E","L3-090604":"BT-E",
+  "L3-090701":"BT-H","L3-090702":"BT-C","L3-090703":"BT-E","L3-090704":"BT-H",
+  "L3-100101":"BT-F","L3-100102":"BT-E","L3-100201":"BT-H",
+  "L3-100301":"BT-D","L3-100302":"BT-H","L3-100303":"BT-G","L3-100401":"BT-H","L3-100402":"BT-D",
+  "L3-100501":"BT-H","L3-100601":"BT-E",
+  "L3-110101":"BT-I","L3-110102":"BT-I","L3-110103":"BT-I","L3-110104":"BT-E",
+  "L3-110201":"BT-E","L3-110202":"BT-E","L3-110203":"BT-E",
+  "L3-110301":"BT-E","L3-110302":"BT-E","L3-110303":"BT-E","L3-110304":"BT-F",
+  "L3-110401":"BT-J","L3-110402":"BT-J",
+  "L3-110501":"BT-E","L3-110502":"BT-E","L3-110503":"BT-E",
+  "L3-110601":"BT-G","L3-110602":"BT-G","L3-110603":"BT-G",
+  "L3-DRIVER":"BT-C",
+};
+
+// BT→긴급 오버라이드: 어떤 BT든 긴급 조건 시 BT-K로 전환
+function resolveBT(l3Code,isUrgent){
+  if(isUrgent)return "BT-K";
+  return L3_TO_BT[l3Code]||"BT-E"; // default: 일반 경쟁견적
+}
+
+
+/* ═══════════════════════════════════════════════════════════════
+   L3 품목별 개별 메시지 (Sheet⑤ 원본 152개)
+   BT가 질문을 바꿈 — 공통 UX_GROUPS 대신 품목 전용 안내
+   ═══════════════════════════════════════════════════════════════ */
+var L3_MSG={
+  "L3-010101":{m:"✅ BSM 카탈로그에서 바로 주문하세요!",m2:"\"사무용품·문구\" 검색 → 수량 입력 → 즉시 발주",m3:"⚡ 처리시간: 15초 (자동승인)",sla:"4시간 자동",owner:"",btns:["카탈로그 주문","수량수정","유사품 추천","URL 구매대행"],access:"카탈로그 직접발주",warn:"VIOL-C01: 카탈로그 외 발주 차단"},
+  "L3-010102":{m:"📋 BSM [총무팀 메뉴] → [이용 신청] 클릭",m2:"이용 내용·기간·수량 입력",m3:"⚠️ PR 작성 불가 — 총무팀 담당자가 계약 기반으로 처리",sla:"1영업일",owner:"총무팀",btns:["총무팀 이용 신청","계약 잔여한도 확인","신청 현황"],access:"이용신청만",warn:"VIOL-MD01: PR 시도 차단"},
+  "L3-010103":{m:"🔍 먼저 BSM에서 기존 계약 검색!",m2:"기존계약 있음: PO 직접 생성 (PR 불필요)",m3:"기존계약 없음: PR 작성 → 팀장 승인 → 소싱",sla:"1영업일",owner:"",btns:["기존계약 검색","PO 직접 생성","신규 PR 작성","IT보안 검토 요청"],access:"기존계약:PO직접",warn:"VIOL-C60: 중복 구독 차단"},
+  "L3-010201":{m:"✅ BSM 카탈로그에서 바로 주문하세요!",m2:"\"명함·사내 인쇄물\" 검색 → 수량 입력 → 즉시 발주",m3:"⚡ 처리시간: 15초 (자동승인)",sla:"4시간 자동",owner:"",btns:["카탈로그 주문","수량수정","유사품 추천","URL 구매대행"],access:"카탈로그 직접발주",warn:"VIOL-C01: 카탈로그 외 발주 차단"},
+  "L3-010301":{m:"📦 BSM [총무팀 메뉴] → [서비스 신청] 클릭",m2:"수량·납기·목적 입력 후 신청 완료",m3:"⚠️ PR 직접 작성은 불가합니다",sla:"4시간 자동",owner:"총무팀",btns:["총무팀 서비스 신청","신청 현황 조회"],access:"주관부서 메뉴만",warn:"VIOL-MD01: 개인 직접발주 차단"},
+  "L3-010302":{m:"✍️ BSM [새 구매요청] → PR 직접 작성",m2:"\"통·번역 서비스\" 품목 선택 → 요구사양서 첨부 필수",m3:"납기 2~4주 전 요청 권장",sla:"1영업일",owner:"",btns:["새 PR 작성","AI 사양 도움받기","공급사 Pool 조회","소싱팀 문의"],access:"PR 전체 권한",warn:"VIOL-C10: 특정업체 지정 차단"},
+  "L3-010303":{m:"🔍 먼저 BSM에서 기존 계약 검색!",m2:"기존계약 있음: PO 직접 생성 (PR 불필요)",m3:"기존계약 없음: PR 작성 → 팀장 승인 → 소싱",sla:"1영업일",owner:"",btns:["기존계약 검색","PO 직접 생성","신규 PR 작성","IT보안 검토 요청"],access:"기존계약:PO직접",warn:"VIOL-C60: 중복 구독 차단"},
+  "L3-010401":{m:"📦 BSM [총무팀 메뉴] → [서비스 신청] 클릭",m2:"수량·납기·목적 입력 후 신청 완료",m3:"⚠️ PR 직접 작성은 불가합니다",sla:"4시간 자동",owner:"총무팀",btns:["총무팀 서비스 신청","신청 현황 조회"],access:"주관부서 메뉴만",warn:"VIOL-MD01: 개인 직접발주 차단"},
+  "L3-020101":{m:"📋 BSM [HR팀 메뉴] → [이용 신청] 클릭",m2:"이용 내용·기간·수량 입력",m3:"⚠️ PR 작성 불가 — HR팀 담당자가 계약 기반으로 처리",sla:"1영업일",owner:"HR팀",btns:["HR팀 이용 신청","계약 잔여한도 확인","신청 현황"],access:"이용신청만",warn:"VIOL-MD01: PR 시도 차단"},
+  "L3-020102":{m:"📋 BSM [HR팀 메뉴] → [이용 신청] 클릭",m2:"이용 내용·기간·수량 입력",m3:"⚠️ PR 작성 불가 — HR팀 담당자가 계약 기반으로 처리",sla:"1영업일",owner:"HR팀",btns:["HR팀 이용 신청","계약 잔여한도 확인","신청 현황"],access:"이용신청만",warn:"VIOL-MD01: PR 시도 차단"},
+  "L3-020103":{m:"📋 BSM [HR팀 메뉴] → [이용 신청] 클릭",m2:"이용 내용·기간·수량 입력",m3:"⚠️ PR 작성 불가 — HR팀 담당자가 계약 기반으로 처리",sla:"1영업일",owner:"HR팀",btns:["HR팀 이용 신청","계약 잔여한도 확인","신청 현황"],access:"이용신청만",warn:"VIOL-MD01: PR 시도 차단"},
+  "L3-020104":{m:"📋 BSM [HR팀 메뉴] → [이용 신청] 클릭",m2:"이용 내용·기간·수량 입력",m3:"⚠️ PR 작성 불가 — HR팀 담당자가 계약 기반으로 처리",sla:"1영업일",owner:"HR팀",btns:["HR팀 이용 신청","계약 잔여한도 확인","신청 현황"],access:"이용신청만",warn:"VIOL-MD01: PR 시도 차단"},
+  "L3-020105":{m:"📋 BSM [HR팀 메뉴] → [이용 신청] 클릭",m2:"이용 내용·기간·수량 입력",m3:"⚠️ PR 작성 불가 — HR팀 담당자가 계약 기반으로 처리",sla:"1영업일",owner:"HR팀",btns:["HR팀 이용 신청","계약 잔여한도 확인","신청 현황"],access:"이용신청만",warn:"VIOL-MD01: PR 시도 차단"},
+  "L3-020106":{m:"📋 BSM [HR팀 메뉴] → [이용 신청] 클릭",m2:"이용 내용·기간·수량 입력",m3:"⚠️ PR 작성 불가 — HR팀 담당자가 계약 기반으로 처리",sla:"1영업일",owner:"HR팀",btns:["HR팀 이용 신청","계약 잔여한도 확인","신청 현황"],access:"이용신청만",warn:"VIOL-MD01: PR 시도 차단"},
+  "L3-020107":{m:"📋 BSM [HR팀 메뉴] → [이용 신청] 클릭",m2:"이용 내용·기간·수량 입력",m3:"⚠️ PR 작성 불가 — HR팀 담당자가 계약 기반으로 처리",sla:"1영업일",owner:"HR팀",btns:["HR팀 이용 신청","계약 잔여한도 확인","신청 현황"],access:"이용신청만",warn:"VIOL-MD01: PR 시도 차단"},
+  "L3-020201":{m:"📋 BSM [HR팀 메뉴] → [이용 신청] 클릭",m2:"이용 내용·기간·수량 입력",m3:"⚠️ PR 작성 불가 — HR팀 담당자가 계약 기반으로 처리",sla:"1영업일",owner:"HR팀",btns:["HR팀 이용 신청","계약 잔여한도 확인","신청 현황"],access:"이용신청만",warn:"VIOL-MD01: PR 시도 차단"},
+  "L3-020202":{m:"📋 BSM [HR팀 메뉴] → [이용 신청] 클릭",m2:"이용 내용·기간·수량 입력",m3:"⚠️ PR 작성 불가 — HR팀 담당자가 계약 기반으로 처리",sla:"1영업일",owner:"HR팀",btns:["HR팀 이용 신청","계약 잔여한도 확인","신청 현황"],access:"이용신청만",warn:"VIOL-MD01: PR 시도 차단"},
+  "L3-020203":{m:"📦 BSM [HR팀 메뉴] → [서비스 신청] 클릭",m2:"수량·납기·목적 입력 후 신청 완료",m3:"⚠️ PR 직접 작성은 불가합니다",sla:"4시간 자동",owner:"HR팀",btns:["HR팀 서비스 신청","신청 현황 조회"],access:"주관부서 메뉴만",warn:"VIOL-MD01: 개인 직접발주 차단"},
+  "L3-020301":{m:"✍️ BSM [새 구매요청] → PR 직접 작성",m2:"\"채용 대행 서비스\" 품목 선택 → 요구사양서 첨부 필수",m3:"납기 2~4주 전 요청 권장",sla:"1영업일",owner:"HR팀",btns:["새 PR 작성","AI 사양 도움받기","공급사 Pool 조회","소싱팀 문의"],access:"PR 전체 권한",warn:"VIOL-C10: 특정업체 지정 차단"},
+  "L3-020302":{m:"✅ BSM [새 구매요청] → PR 작성",m2:"단가계약번호 기재 필수",m3:"계약 한도 내에서 신청",sla:"4시간~1영업일",owner:"HR팀",btns:["PR 작성","단가계약 조회","계약 잔여한도","갱신 요청"],access:"PR+단가계약번호",warn:"VIOL-C40: 만료계약 발주 차단"},
+  "L3-020401":{m:"📜 BSM [새 구매요청] → PR+수의사유서 작성",m2:"독점 근거자료+가격적정성 검토서 첨부",m3:"연간 동일업체 3회 한도 확인",sla:"1영업일",owner:"HR팀",btns:["수의계약 PR 작성","수의사유서 템플릿","원가분석 요청"],access:"PR+사유서 권한",warn:"VIOL-C30: 사유서 미첨부 차단"},
+  "L3-030101":{m:"📤 BSM [시설팀 메뉴] → [구매 지원 신청] 클릭",m2:"요청 내용·예산·납기 입력 후 제출",m3:"⚠️ PR 직접 작성 불가",sla:"1영업일",owner:"시설팀",btns:["시설팀 구매지원 신청","진행 현황 조회"],access:"지원신청만",warn:"VIOL-MD01: PR 시도 차단"},
+  "L3-030102":{m:"📤 BSM [시설팀 메뉴] → [구매 지원 신청] 클릭",m2:"요청 내용·예산·납기 입력 후 제출",m3:"⚠️ PR 직접 작성 불가",sla:"1영업일",owner:"시설팀",btns:["시설팀 구매지원 신청","진행 현황 조회"],access:"지원신청만",warn:"VIOL-MD01: PR 시도 차단"},
+  "L3-030103":{m:"📤 BSM [시설팀 메뉴] → [구매 지원 신청] 클릭",m2:"요청 내용·예산·납기 입력 후 제출",m3:"⚠️ PR 직접 작성 불가",sla:"1영업일",owner:"시설팀",btns:["시설팀 구매지원 신청","진행 현황 조회"],access:"지원신청만",warn:"VIOL-MD01: PR 시도 차단"},
+  "L3-030104":{m:"📋 BSM [시설팀 메뉴] → [이용 신청] 클릭",m2:"이용 내용·기간·수량 입력",m3:"⚠️ PR 작성 불가 — 시설팀 담당자가 계약 기반으로 처리",sla:"1영업일",owner:"시설팀",btns:["시설팀 이용 신청","계약 잔여한도 확인","신청 현황"],access:"이용신청만",warn:"VIOL-MD01: PR 시도 차단"},
+  "L3-030105":{m:"📤 BSM [시설팀 메뉴] → [구매 지원 신청] 클릭",m2:"요청 내용·예산·납기 입력 후 제출",m3:"⚠️ PR 직접 작성 불가",sla:"1영업일",owner:"시설팀",btns:["시설팀 구매지원 신청","진행 현황 조회"],access:"지원신청만",warn:"VIOL-MD01: PR 시도 차단"},
+  "L3-030106":{m:"📤 BSM [시설팀 메뉴] → [구매 지원 신청] 클릭",m2:"요청 내용·예산·납기 입력 후 제출",m3:"⚠️ PR 직접 작성 불가",sla:"1영업일",owner:"시설팀",btns:["시설팀 구매지원 신청","진행 현황 조회"],access:"지원신청만",warn:"VIOL-MD01: PR 시도 차단"},
+  "L3-030201":{m:"📋 BSM [시설팀 메뉴] → [이용 신청] 클릭",m2:"이용 내용·기간·수량 입력",m3:"⚠️ PR 작성 불가 — 시설팀 담당자가 계약 기반으로 처리",sla:"1영업일",owner:"시설팀",btns:["시설팀 이용 신청","계약 잔여한도 확인","신청 현황"],access:"이용신청만",warn:"VIOL-MD01: PR 시도 차단"},
+  "L3-030202":{m:"📋 BSM [시설팀 메뉴] → [이용 신청] 클릭",m2:"이용 내용·기간·수량 입력",m3:"⚠️ PR 작성 불가 — 시설팀 담당자가 계약 기반으로 처리",sla:"1영업일",owner:"시설팀",btns:["시설팀 이용 신청","계약 잔여한도 확인","신청 현황"],access:"이용신청만",warn:"VIOL-MD01: PR 시도 차단"},
+  "L3-030203":{m:"📋 BSM [시설팀 메뉴] → [이용 신청] 클릭",m2:"이용 내용·기간·수량 입력",m3:"⚠️ PR 작성 불가 — 시설팀 담당자가 계약 기반으로 처리",sla:"1영업일",owner:"시설팀",btns:["시설팀 이용 신청","계약 잔여한도 확인","신청 현황"],access:"이용신청만",warn:"VIOL-MD01: PR 시도 차단"},
+  "L3-030204":{m:"📋 BSM [시설팀 메뉴] → [이용 신청] 클릭",m2:"이용 내용·기간·수량 입력",m3:"⚠️ PR 작성 불가 — 시설팀 담당자가 계약 기반으로 처리",sla:"1영업일",owner:"시설팀",btns:["시설팀 이용 신청","계약 잔여한도 확인","신청 현황"],access:"이용신청만",warn:"VIOL-MD01: PR 시도 차단"},
+  "L3-030205":{m:"📋 BSM [시설팀 메뉴] → [이용 신청] 클릭",m2:"이용 내용·기간·수량 입력",m3:"⚠️ PR 작성 불가 — 시설팀 담당자가 계약 기반으로 처리",sla:"1영업일",owner:"시설팀",btns:["시설팀 이용 신청","계약 잔여한도 확인","신청 현황"],access:"이용신청만",warn:"VIOL-MD01: PR 시도 차단"},
+  "L3-030301":{m:"📦 BSM [총무팀 메뉴] → [서비스 신청] 클릭",m2:"수량·납기·목적 입력 후 신청 완료",m3:"⚠️ PR 직접 작성은 불가합니다",sla:"4시간 자동",owner:"총무팀",btns:["총무팀 서비스 신청","신청 현황 조회"],access:"주관부서 메뉴만",warn:"VIOL-MD01: 개인 직접발주 차단"},
+  "L3-030302":{m:"📦 BSM [총무팀 메뉴] → [서비스 신청] 클릭",m2:"수량·납기·목적 입력 후 신청 완료",m3:"⚠️ PR 직접 작성은 불가합니다",sla:"4시간 자동",owner:"총무팀",btns:["총무팀 서비스 신청","신청 현황 조회"],access:"주관부서 메뉴만",warn:"VIOL-MD01: 개인 직접발주 차단"},
+  "L3-030303":{m:"📦 BSM [총무팀 메뉴] → [서비스 신청] 클릭",m2:"수량·납기·목적 입력 후 신청 완료",m3:"⚠️ PR 직접 작성은 불가합니다",sla:"4시간 자동",owner:"총무팀",btns:["총무팀 서비스 신청","신청 현황 조회"],access:"주관부서 메뉴만",warn:"VIOL-MD01: 개인 직접발주 차단"},
+  "L3-030401":{m:"📋 BSM [시설팀 메뉴] → [이용 신청] 클릭",m2:"이용 내용·기간·수량 입력",m3:"⚠️ PR 작성 불가 — 시설팀 담당자가 계약 기반으로 처리",sla:"1영업일",owner:"시설팀",btns:["시설팀 이용 신청","계약 잔여한도 확인","신청 현황"],access:"이용신청만",warn:"VIOL-MD01: PR 시도 차단"},
+  "L3-040101":{m:"📋 BSM [총무팀 메뉴] → [이용 신청] 클릭",m2:"이용 내용·기간·수량 입력",m3:"⚠️ PR 작성 불가 — 총무팀 담당자가 계약 기반으로 처리",sla:"1영업일",owner:"총무팀",btns:["총무팀 이용 신청","계약 잔여한도 확인","신청 현황"],access:"이용신청만",warn:"VIOL-MD01: PR 시도 차단"},
+  "L3-040102":{m:"📋 BSM [총무팀 메뉴] → [이용 신청] 클릭",m2:"이용 내용·기간·수량 입력",m3:"⚠️ PR 작성 불가 — 총무팀 담당자가 계약 기반으로 처리",sla:"1영업일",owner:"총무팀",btns:["총무팀 이용 신청","계약 잔여한도 확인","신청 현황"],access:"이용신청만",warn:"VIOL-MD01: PR 시도 차단"},
+  "L3-040201":{m:"📋 BSM [총무팀 메뉴] → [이용 신청] 클릭",m2:"이용 내용·기간·수량 입력",m3:"⚠️ PR 작성 불가 — 총무팀 담당자가 계약 기반으로 처리",sla:"1영업일",owner:"총무팀",btns:["총무팀 이용 신청","계약 잔여한도 확인","신청 현황"],access:"이용신청만",warn:"VIOL-MD01: PR 시도 차단"},
+  "L3-040202":{m:"📋 BSM [총무팀 메뉴] → [이용 신청] 클릭",m2:"이용 내용·기간·수량 입력",m3:"⚠️ PR 작성 불가 — 총무팀 담당자가 계약 기반으로 처리",sla:"1영업일",owner:"총무팀",btns:["총무팀 이용 신청","계약 잔여한도 확인","신청 현황"],access:"이용신청만",warn:"VIOL-MD01: PR 시도 차단"},
+  "L3-040203":{m:"📜 BSM [새 구매요청] → PR+수의사유서 작성",m2:"독점 근거자료+가격적정성 검토서 첨부",m3:"연간 동일업체 3회 한도 확인",sla:"1영업일",owner:"HR팀",btns:["수의계약 PR 작성","수의사유서 템플릿","원가분석 요청"],access:"PR+사유서 권한",warn:"VIOL-C30: 사유서 미첨부 차단"},
+  "L3-050101":{m:"📋 BSM [재무팀 메뉴] → [이용 신청] 클릭",m2:"이용 내용·기간·수량 입력",m3:"⚠️ PR 작성 불가 — 재무팀 담당자가 계약 기반으로 처리",sla:"1영업일",owner:"재무팀",btns:["재무팀 이용 신청","계약 잔여한도 확인","신청 현황"],access:"이용신청만",warn:"VIOL-MD01: PR 시도 차단"},
+  "L3-050201":{m:"📋 BSM [재무팀 메뉴] → [이용 신청] 클릭",m2:"이용 내용·기간·수량 입력",m3:"⚠️ PR 작성 불가 — 재무팀 담당자가 계약 기반으로 처리",sla:"1영업일",owner:"재무팀",btns:["재무팀 이용 신청","계약 잔여한도 확인","신청 현황"],access:"이용신청만",warn:"VIOL-MD01: PR 시도 차단"},
+  "L3-050301":{m:"📋 BSM [재무팀 메뉴] → [이용 신청] 클릭",m2:"이용 내용·기간·수량 입력",m3:"⚠️ PR 작성 불가 — 재무팀 담당자가 계약 기반으로 처리",sla:"1영업일",owner:"재무팀",btns:["재무팀 이용 신청","계약 잔여한도 확인","신청 현황"],access:"이용신청만",warn:"VIOL-MD01: PR 시도 차단"},
+  "L3-050401":{m:"✅ BSM [새 구매요청] → PR 작성",m2:"단가계약번호 기재 필수",m3:"계약 한도 내에서 신청",sla:"4시간~1영업일",owner:"재무팀",btns:["PR 작성","단가계약 조회","계약 잔여한도","갱신 요청"],access:"PR+단가계약번호",warn:"VIOL-C40: 만료계약 발주 차단"},
+  "L3-050501":{m:"📋 BSM [재무팀 메뉴] → [이용 신청] 클릭",m2:"이용 내용·기간·수량 입력",m3:"⚠️ PR 작성 불가 — 재무팀 담당자가 계약 기반으로 처리",sla:"1영업일",owner:"재무팀",btns:["재무팀 이용 신청","계약 잔여한도 확인","신청 현황"],access:"이용신청만",warn:"VIOL-MD01: PR 시도 차단"},
+  "L3-050601":{m:"✍️ BSM [새 구매요청] → PR 직접 작성",m2:"\"보증보험\" 품목 선택 → 요구사양서 첨부 필수",m3:"납기 2~4주 전 요청 권장",sla:"1영업일",owner:"재무팀",btns:["새 PR 작성","AI 사양 도움받기","공급사 Pool 조회","소싱팀 문의"],access:"PR 전체 권한",warn:"VIOL-C10: 특정업체 지정 차단"},
+  "L3-050701":{m:"📋 BSM [총무팀 메뉴] → [이용 신청] 클릭",m2:"이용 내용·기간·수량 입력",m3:"⚠️ PR 작성 불가 — 총무팀 담당자가 계약 기반으로 처리",sla:"1영업일",owner:"총무팀",btns:["총무팀 이용 신청","계약 잔여한도 확인","신청 현황"],access:"이용신청만",warn:"VIOL-MD01: PR 시도 차단"},
+  "L3-050702":{m:"📋 BSM [재무팀 메뉴] → [이용 신청] 클릭",m2:"이용 내용·기간·수량 입력",m3:"⚠️ PR 작성 불가 — 재무팀 담당자가 계약 기반으로 처리",sla:"1영업일",owner:"재무팀",btns:["재무팀 이용 신청","계약 잔여한도 확인","신청 현황"],access:"이용신청만",warn:"VIOL-MD01: PR 시도 차단"},
+  "L3-050801":{m:"✅ BSM [새 구매요청] → PR 작성",m2:"단가계약번호 기재 필수",m3:"계약 한도 내에서 신청",sla:"4시간~1영업일",owner:"재무팀",btns:["PR 작성","단가계약 조회","계약 잔여한도","갱신 요청"],access:"PR+단가계약번호",warn:"VIOL-C40: 만료계약 발주 차단"},
+  "L3-060101":{m:"📤 BSM [법무팀 메뉴] → [구매 지원 신청] 클릭",m2:"요청 내용·예산·납기 입력 후 제출",m3:"⚠️ PR 직접 작성 불가",sla:"1영업일",owner:"법무팀",btns:["법무팀 구매지원 신청","진행 현황 조회"],access:"지원신청만",warn:"VIOL-MD01: PR 시도 차단"},
+  "L3-060201":{m:"📤 BSM [경영기획팀 메뉴] → [구매 지원 신청] 클릭",m2:"요청 내용·예산·납기 입력 후 제출",m3:"⚠️ PR 직접 작성 불가",sla:"1영업일",owner:"경영기획팀",btns:["경영기획팀 구매지원 신청","진행 현황 조회"],access:"지원신청만",warn:"VIOL-MD01: PR 시도 차단"},
+  "L3-060202":{m:"📋 BSM [새 구매요청] → PR 작성",m2:"CAPEX 예산승인서+사업계획서 첨부 필수",m3:"4~8주 전 요청 권장",sla:"2영업일",owner:"IT팀",btns:["CAPEX PR 작성","예산승인 확인","입찰 일정 조회"],access:"PR 전체 권한",warn:"VIOL-C20: CAPEX 미승인 차단"},
+  "L3-060203":{m:"📜 BSM [새 구매요청] → PR+수의사유서 작성",m2:"독점 근거자료+가격적정성 검토서 첨부",m3:"연간 동일업체 3회 한도 확인",sla:"1영업일",owner:"HR팀",btns:["수의계약 PR 작성","수의사유서 템플릿","원가분석 요청"],access:"PR+사유서 권한",warn:"VIOL-C30: 사유서 미첨부 차단"},
+  "L3-060301":{m:"📜 BSM [새 구매요청] → PR+수의사유서 작성",m2:"독점 근거자료+가격적정성 검토서 첨부",m3:"연간 동일업체 3회 한도 확인",sla:"1영업일",owner:"재무팀",btns:["수의계약 PR 작성","수의사유서 템플릿","원가분석 요청"],access:"PR+사유서 권한",warn:"VIOL-C30: 사유서 미첨부 차단"},
+  "L3-060302":{m:"📋 BSM [HR팀 메뉴] → [이용 신청] 클릭",m2:"이용 내용·기간·수량 입력",m3:"⚠️ PR 작성 불가 — HR팀 담당자가 계약 기반으로 처리",sla:"1영업일",owner:"HR팀",btns:["HR팀 이용 신청","계약 잔여한도 확인","신청 현황"],access:"이용신청만",warn:"VIOL-MD01: PR 시도 차단"},
+  "L3-060401":{m:"✅ BSM [새 구매요청] → PR 작성",m2:"단가계약번호 기재 필수",m3:"계약 한도 내에서 신청",sla:"4시간~1영업일",owner:"",btns:["PR 작성","단가계약 조회","계약 잔여한도","갱신 요청"],access:"PR+단가계약번호",warn:"VIOL-C40: 만료계약 발주 차단"},
+  "L3-070101":{m:"📤 BSM [마케팅팀 메뉴] → [구매 지원 신청] 클릭",m2:"요청 내용·예산·납기 입력 후 제출",m3:"⚠️ PR 직접 작성 불가",sla:"1영업일",owner:"마케팅팀",btns:["마케팅팀 구매지원 신청","진행 현황 조회"],access:"지원신청만",warn:"VIOL-MD01: PR 시도 차단"},
+  "L3-070201":{m:"📤 BSM [마케팅팀 메뉴] → [구매 지원 신청] 클릭",m2:"요청 내용·예산·납기 입력 후 제출",m3:"⚠️ PR 직접 작성 불가",sla:"1영업일",owner:"마케팅팀",btns:["마케팅팀 구매지원 신청","진행 현황 조회"],access:"지원신청만",warn:"VIOL-MD01: PR 시도 차단"},
+  "L3-070202":{m:"📤 BSM [마케팅팀 메뉴] → [구매 지원 신청] 클릭",m2:"요청 내용·예산·납기 입력 후 제출",m3:"⚠️ PR 직접 작성 불가",sla:"1영업일",owner:"마케팅팀",btns:["마케팅팀 구매지원 신청","진행 현황 조회"],access:"지원신청만",warn:"VIOL-MD01: PR 시도 차단"},
+  "L3-070203":{m:"📤 BSM [마케팅팀 메뉴] → [구매 지원 신청] 클릭",m2:"요청 내용·예산·납기 입력 후 제출",m3:"⚠️ PR 직접 작성 불가",sla:"1영업일",owner:"마케팅팀",btns:["마케팅팀 구매지원 신청","진행 현황 조회"],access:"지원신청만",warn:"VIOL-MD01: PR 시도 차단"},
+  "L3-070204":{m:"🔍 먼저 BSM에서 기존 계약 검색!",m2:"기존계약 있음: PO 직접 생성 (PR 불필요)",m3:"기존계약 없음: PR 작성 → 팀장 승인 → 소싱",sla:"1영업일",owner:"마케팅팀",btns:["기존계약 검색","PO 직접 생성","신규 PR 작성","IT보안 검토 요청"],access:"기존계약:PO직접",warn:"VIOL-C60: 중복 구독 차단"},
+  "L3-070301":{m:"📤 BSM [마케팅팀 메뉴] → [구매 지원 신청] 클릭",m2:"요청 내용·예산·납기 입력 후 제출",m3:"⚠️ PR 직접 작성 불가",sla:"1영업일",owner:"마케팅팀",btns:["마케팅팀 구매지원 신청","진행 현황 조회"],access:"지원신청만",warn:"VIOL-MD01: PR 시도 차단"},
+  "L3-070302":{m:"📤 BSM [마케팅팀 메뉴] → [구매 지원 신청] 클릭",m2:"요청 내용·예산·납기 입력 후 제출",m3:"⚠️ PR 직접 작성 불가",sla:"1영업일",owner:"마케팅팀",btns:["마케팅팀 구매지원 신청","진행 현황 조회"],access:"지원신청만",warn:"VIOL-MD01: PR 시도 차단"},
+  "L3-070303":{m:"📤 BSM [마케팅팀 메뉴] → [구매 지원 신청] 클릭",m2:"요청 내용·예산·납기 입력 후 제출",m3:"⚠️ PR 직접 작성 불가",sla:"1영업일",owner:"마케팅팀",btns:["마케팅팀 구매지원 신청","진행 현황 조회"],access:"지원신청만",warn:"VIOL-MD01: PR 시도 차단"},
+  "L3-070304":{m:"📤 BSM [마케팅팀 메뉴] → [구매 지원 신청] 클릭",m2:"요청 내용·예산·납기 입력 후 제출",m3:"⚠️ PR 직접 작성 불가",sla:"1영업일",owner:"마케팅팀",btns:["마케팅팀 구매지원 신청","진행 현황 조회"],access:"지원신청만",warn:"VIOL-MD01: PR 시도 차단"},
+  "L3-070401":{m:"📤 BSM [마케팅팀 메뉴] → [구매 지원 신청] 클릭",m2:"요청 내용·예산·납기 입력 후 제출",m3:"⚠️ PR 직접 작성 불가",sla:"1영업일",owner:"마케팅팀",btns:["마케팅팀 구매지원 신청","진행 현황 조회"],access:"지원신청만",warn:"VIOL-MD01: PR 시도 차단"},
+  "L3-070402":{m:"📤 BSM [마케팅팀 메뉴] → [구매 지원 신청] 클릭",m2:"요청 내용·예산·납기 입력 후 제출",m3:"⚠️ PR 직접 작성 불가",sla:"1영업일",owner:"마케팅팀",btns:["마케팅팀 구매지원 신청","진행 현황 조회"],access:"지원신청만",warn:"VIOL-MD01: PR 시도 차단"},
+  "L3-070403":{m:"📤 BSM [마케팅팀 메뉴] → [구매 지원 신청] 클릭",m2:"요청 내용·예산·납기 입력 후 제출",m3:"⚠️ PR 직접 작성 불가",sla:"1영업일",owner:"마케팅팀",btns:["마케팅팀 구매지원 신청","진행 현황 조회"],access:"지원신청만",warn:"VIOL-MD01: PR 시도 차단"},
+  "L3-070404":{m:"📤 BSM [마케팅팀 메뉴] → [구매 지원 신청] 클릭",m2:"요청 내용·예산·납기 입력 후 제출",m3:"⚠️ PR 직접 작성 불가",sla:"1영업일",owner:"마케팅팀",btns:["마케팅팀 구매지원 신청","진행 현황 조회"],access:"지원신청만",warn:"VIOL-MD01: PR 시도 차단"},
+  "L3-070501":{m:"📤 BSM [마케팅팀 메뉴] → [구매 지원 신청] 클릭",m2:"요청 내용·예산·납기 입력 후 제출",m3:"⚠️ PR 직접 작성 불가",sla:"1영업일",owner:"마케팅팀",btns:["마케팅팀 구매지원 신청","진행 현황 조회"],access:"지원신청만",warn:"VIOL-MD01: PR 시도 차단"},
+  "L3-070502":{m:"📤 BSM [마케팅팀 메뉴] → [구매 지원 신청] 클릭",m2:"요청 내용·예산·납기 입력 후 제출",m3:"⚠️ PR 직접 작성 불가",sla:"1영업일",owner:"마케팅팀",btns:["마케팅팀 구매지원 신청","진행 현황 조회"],access:"지원신청만",warn:"VIOL-MD01: PR 시도 차단"},
+  "L3-070503":{m:"✅ BSM 카탈로그에서 바로 주문하세요!",m2:"\"매장용 소모품\" 검색 → 수량 입력 → 즉시 발주",m3:"⚡ 처리시간: 15초 (자동승인)",sla:"4시간 자동",owner:"마케팅팀",btns:["카탈로그 주문","수량수정","유사품 추천","URL 구매대행"],access:"카탈로그 직접발주",warn:"VIOL-C01: 카탈로그 외 발주 차단"},
+  "L3-070504":{m:"📤 BSM [마케팅팀 메뉴] → [구매 지원 신청] 클릭",m2:"요청 내용·예산·납기 입력 후 제출",m3:"⚠️ PR 직접 작성 불가",sla:"1영업일",owner:"마케팅팀",btns:["마케팅팀 구매지원 신청","진행 현황 조회"],access:"지원신청만",warn:"VIOL-MD01: PR 시도 차단"},
+  "L3-070505":{m:"📤 BSM [마케팅팀 메뉴] → [구매 지원 신청] 클릭",m2:"요청 내용·예산·납기 입력 후 제출",m3:"⚠️ PR 직접 작성 불가",sla:"1영업일",owner:"마케팅팀",btns:["마케팅팀 구매지원 신청","진행 현황 조회"],access:"지원신청만",warn:"VIOL-MD01: PR 시도 차단"},
+  "L3-070601":{m:"📤 BSM [마케팅팀 메뉴] → [구매 지원 신청] 클릭",m2:"요청 내용·예산·납기 입력 후 제출",m3:"⚠️ PR 직접 작성 불가",sla:"1영업일",owner:"마케팅팀",btns:["마케팅팀 구매지원 신청","진행 현황 조회"],access:"지원신청만",warn:"VIOL-MD01: PR 시도 차단"},
+  "L3-070701":{m:"✍️ BSM [새 구매요청] → PR 직접 작성",m2:"\"시장조사\" 품목 선택 → 요구사양서 첨부 필수",m3:"납기 2~4주 전 요청 권장",sla:"1영업일",owner:"마케팅팀",btns:["새 PR 작성","AI 사양 도움받기","공급사 Pool 조회","소싱팀 문의"],access:"PR 전체 권한",warn:"VIOL-C10: 특정업체 지정 차단"},
+  "L3-070702":{m:"🔍 먼저 BSM에서 기존 계약 검색!",m2:"기존계약 있음: PO 직접 생성 (PR 불필요)",m3:"기존계약 없음: PR 작성 → 팀장 승인 → 소싱",sla:"1영업일",owner:"마케팅팀",btns:["기존계약 검색","PO 직접 생성","신규 PR 작성","IT보안 검토 요청"],access:"기존계약:PO직접",warn:"VIOL-C60: 중복 구독 차단"},
+  "L3-080101":{m:"📋 BSM [새 구매요청] → PR 작성",m2:"CAPEX 예산승인서+사업계획서 첨부 필수",m3:"4~8주 전 요청 권장",sla:"2영업일",owner:"IT팀",btns:["CAPEX PR 작성","예산승인 확인","입찰 일정 조회"],access:"PR 전체 권한",warn:"VIOL-C20: CAPEX 미승인 차단"},
+  "L3-080102":{m:"📋 BSM [새 구매요청] → PR 작성",m2:"CAPEX 예산승인서+사업계획서 첨부 필수",m3:"4~8주 전 요청 권장",sla:"2영업일",owner:"IT팀",btns:["CAPEX PR 작성","예산승인 확인","입찰 일정 조회"],access:"PR 전체 권한",warn:"VIOL-C20: CAPEX 미승인 차단"},
+  "L3-080201":{m:"📦 BSM [IT팀 메뉴] → [서비스 신청] 클릭",m2:"수량·납기·목적 입력 후 신청 완료",m3:"⚠️ PR 직접 작성은 불가합니다",sla:"4시간 자동",owner:"IT팀",btns:["IT팀 서비스 신청","신청 현황 조회"],access:"주관부서 메뉴만",warn:"VIOL-MD01: 개인 직접발주 차단"},
+  "L3-080202":{m:"📦 BSM [IT팀 메뉴] → [서비스 신청] 클릭",m2:"수량·납기·목적 입력 후 신청 완료",m3:"⚠️ PR 직접 작성은 불가합니다",sla:"4시간 자동",owner:"IT팀",btns:["IT팀 서비스 신청","신청 현황 조회"],access:"주관부서 메뉴만",warn:"VIOL-MD01: 개인 직접발주 차단"},
+  "L3-080301":{m:"📋 BSM [새 구매요청] → PR 작성",m2:"CAPEX 예산승인서+사업계획서 첨부 필수",m3:"4~8주 전 요청 권장",sla:"2영업일",owner:"IT팀",btns:["CAPEX PR 작성","예산승인 확인","입찰 일정 조회"],access:"PR 전체 권한",warn:"VIOL-C20: CAPEX 미승인 차단"},
+  "L3-080302":{m:"📋 BSM [IT팀 메뉴] → [이용 신청] 클릭",m2:"이용 내용·기간·수량 입력",m3:"⚠️ PR 작성 불가 — IT팀 담당자가 계약 기반으로 처리",sla:"1영업일",owner:"IT팀",btns:["IT팀 이용 신청","계약 잔여한도 확인","신청 현황"],access:"이용신청만",warn:"VIOL-MD01: PR 시도 차단"},
+  "L3-080401":{m:"📦 BSM [IT팀 메뉴] → [서비스 신청] 클릭",m2:"수량·납기·목적 입력 후 신청 완료",m3:"⚠️ PR 직접 작성은 불가합니다",sla:"4시간 자동",owner:"IT팀",btns:["IT팀 서비스 신청","신청 현황 조회"],access:"주관부서 메뉴만",warn:"VIOL-MD01: 개인 직접발주 차단"},
+  "L3-080402":{m:"📋 BSM [IT팀 메뉴] → [이용 신청] 클릭",m2:"이용 내용·기간·수량 입력",m3:"⚠️ PR 작성 불가 — IT팀 담당자가 계약 기반으로 처리",sla:"1영업일",owner:"IT팀",btns:["IT팀 이용 신청","계약 잔여한도 확인","신청 현황"],access:"이용신청만",warn:"VIOL-MD01: PR 시도 차단"},
+  "L3-080403":{m:"📦 BSM [IT팀 메뉴] → [서비스 신청] 클릭",m2:"수량·납기·목적 입력 후 신청 완료",m3:"⚠️ PR 직접 작성은 불가합니다",sla:"4시간 자동",owner:"IT팀",btns:["IT팀 서비스 신청","신청 현황 조회"],access:"주관부서 메뉴만",warn:"VIOL-MD01: 개인 직접발주 차단"},
+  "L3-080404":{m:"🔍 먼저 BSM에서 기존 계약 검색!",m2:"기존계약 있음: PO 직접 생성 (PR 불필요)",m3:"기존계약 없음: PR 작성 → 팀장 승인 → 소싱",sla:"1영업일",owner:"IT팀",btns:["기존계약 검색","PO 직접 생성","신규 PR 작성","IT보안 검토 요청"],access:"기존계약:PO직접",warn:"VIOL-C60: 중복 구독 차단"},
+  "L3-080405":{m:"🔍 먼저 BSM에서 기존 계약 검색!",m2:"기존계약 있음: PO 직접 생성 (PR 불필요)",m3:"기존계약 없음: PR 작성 → 팀장 승인 → 소싱",sla:"1영업일",owner:"IT팀",btns:["기존계약 검색","PO 직접 생성","신규 PR 작성","IT보안 검토 요청"],access:"기존계약:PO직접",warn:"VIOL-C60: 중복 구독 차단"},
+  "L3-080501":{m:"📋 BSM [IT팀 메뉴] → [이용 신청] 클릭",m2:"이용 내용·기간·수량 입력",m3:"⚠️ PR 작성 불가 — IT팀 담당자가 계약 기반으로 처리",sla:"1영업일",owner:"IT팀",btns:["IT팀 이용 신청","계약 잔여한도 확인","신청 현황"],access:"이용신청만",warn:"VIOL-MD01: PR 시도 차단"},
+  "L3-080502":{m:"✅ BSM [새 구매요청] → PR 작성",m2:"단가계약번호 기재 필수",m3:"계약 한도 내에서 신청",sla:"4시간~1영업일",owner:"IT팀",btns:["PR 작성","단가계약 조회","계약 잔여한도","갱신 요청"],access:"PR+단가계약번호",warn:"VIOL-C40: 만료계약 발주 차단"},
+  "L3-080503":{m:"📋 BSM [새 구매요청] → PR 작성",m2:"CAPEX 예산승인서+사업계획서 첨부 필수",m3:"4~8주 전 요청 권장",sla:"2영업일",owner:"IT팀",btns:["CAPEX PR 작성","예산승인 확인","입찰 일정 조회"],access:"PR 전체 권한",warn:"VIOL-C20: CAPEX 미승인 차단"},
+  "L3-080601":{m:"📤 BSM [IT팀 메뉴] → [구매 지원 신청] 클릭",m2:"요청 내용·예산·납기 입력 후 제출",m3:"⚠️ PR 직접 작성 불가",sla:"1영업일",owner:"IT팀",btns:["IT팀 구매지원 신청","진행 현황 조회"],access:"지원신청만",warn:"VIOL-MD01: PR 시도 차단"},
+  "L3-080602":{m:"✅ BSM [새 구매요청] → PR 작성",m2:"단가계약번호 기재 필수",m3:"계약 한도 내에서 신청",sla:"4시간~1영업일",owner:"IT팀",btns:["PR 작성","단가계약 조회","계약 잔여한도","갱신 요청"],access:"PR+단가계약번호",warn:"VIOL-C40: 만료계약 발주 차단"},
+  "L3-080701":{m:"📤 BSM [시설팀 메뉴] → [구매 지원 신청] 클릭",m2:"요청 내용·예산·납기 입력 후 제출",m3:"⚠️ PR 직접 작성 불가",sla:"1영업일",owner:"시설팀",btns:["시설팀 구매지원 신청","진행 현황 조회"],access:"지원신청만",warn:"VIOL-MD01: PR 시도 차단"},
+  "L3-080702":{m:"📤 BSM [IT팀 메뉴] → [구매 지원 신청] 클릭",m2:"요청 내용·예산·납기 입력 후 제출",m3:"⚠️ PR 직접 작성 불가",sla:"1영업일",owner:"IT팀",btns:["IT팀 구매지원 신청","진행 현황 조회"],access:"지원신청만",warn:"VIOL-MD01: PR 시도 차단"},
+  "L3-080703":{m:"📋 BSM [IT팀 메뉴] → [이용 신청] 클릭",m2:"이용 내용·기간·수량 입력",m3:"⚠️ PR 작성 불가 — IT팀 담당자가 계약 기반으로 처리",sla:"1영업일",owner:"IT팀",btns:["IT팀 이용 신청","계약 잔여한도 확인","신청 현황"],access:"이용신청만",warn:"VIOL-MD01: PR 시도 차단"},
+  "L3-090101":{m:"✅ BSM [새 구매요청] → PR 작성",m2:"단가계약번호 기재 필수",m3:"계약 한도 내에서 신청",sla:"4시간~1영업일",owner:"물류팀",btns:["PR 작성","단가계약 조회","계약 잔여한도","갱신 요청"],access:"PR+단가계약번호",warn:"VIOL-C40: 만료계약 발주 차단"},
+  "L3-090102":{m:"✅ BSM [새 구매요청] → PR 작성",m2:"단가계약번호 기재 필수",m3:"계약 한도 내에서 신청",sla:"4시간~1영업일",owner:"물류팀",btns:["PR 작성","단가계약 조회","계약 잔여한도","갱신 요청"],access:"PR+단가계약번호",warn:"VIOL-C40: 만료계약 발주 차단"},
+  "L3-090103":{m:"✅ BSM [새 구매요청] → PR 작성",m2:"단가계약번호 기재 필수",m3:"계약 한도 내에서 신청",sla:"4시간~1영업일",owner:"물류팀",btns:["PR 작성","단가계약 조회","계약 잔여한도","갱신 요청"],access:"PR+단가계약번호",warn:"VIOL-C40: 만료계약 발주 차단"},
+  "L3-090104":{m:"✅ BSM [새 구매요청] → PR 작성",m2:"단가계약번호 기재 필수",m3:"계약 한도 내에서 신청",sla:"4시간~1영업일",owner:"물류팀",btns:["PR 작성","단가계약 조회","계약 잔여한도","갱신 요청"],access:"PR+단가계약번호",warn:"VIOL-C40: 만료계약 발주 차단"},
+  "L3-090201":{m:"✅ BSM [새 구매요청] → PR 작성",m2:"단가계약번호 기재 필수",m3:"계약 한도 내에서 신청",sla:"4시간~1영업일",owner:"물류팀",btns:["PR 작성","단가계약 조회","계약 잔여한도","갱신 요청"],access:"PR+단가계약번호",warn:"VIOL-C40: 만료계약 발주 차단"},
+  "L3-090202":{m:"✅ BSM [새 구매요청] → PR 작성",m2:"단가계약번호 기재 필수",m3:"계약 한도 내에서 신청",sla:"4시간~1영업일",owner:"물류팀",btns:["PR 작성","단가계약 조회","계약 잔여한도","갱신 요청"],access:"PR+단가계약번호",warn:"VIOL-C40: 만료계약 발주 차단"},
+  "L3-090203":{m:"✅ BSM [새 구매요청] → PR 작성",m2:"단가계약번호 기재 필수",m3:"계약 한도 내에서 신청",sla:"4시간~1영업일",owner:"물류팀",btns:["PR 작성","단가계약 조회","계약 잔여한도","갱신 요청"],access:"PR+단가계약번호",warn:"VIOL-C40: 만료계약 발주 차단"},
+  "L3-090301":{m:"✅ BSM [새 구매요청] → PR 작성",m2:"단가계약번호 기재 필수",m3:"계약 한도 내에서 신청",sla:"4시간~1영업일",owner:"물류팀",btns:["PR 작성","단가계약 조회","계약 잔여한도","갱신 요청"],access:"PR+단가계약번호",warn:"VIOL-C40: 만료계약 발주 차단"},
+  "L3-090302":{m:"✅ BSM [새 구매요청] → PR 작성",m2:"단가계약번호 기재 필수",m3:"계약 한도 내에서 신청",sla:"4시간~1영업일",owner:"물류팀",btns:["PR 작성","단가계약 조회","계약 잔여한도","갱신 요청"],access:"PR+단가계약번호",warn:"VIOL-C40: 만료계약 발주 차단"},
+  "L3-090303":{m:"✅ BSM [새 구매요청] → PR 작성",m2:"단가계약번호 기재 필수",m3:"계약 한도 내에서 신청",sla:"4시간~1영업일",owner:"물류팀",btns:["PR 작성","단가계약 조회","계약 잔여한도","갱신 요청"],access:"PR+단가계약번호",warn:"VIOL-C40: 만료계약 발주 차단"},
+  "L3-090401":{m:"✅ BSM [새 구매요청] → PR 작성",m2:"단가계약번호 기재 필수",m3:"계약 한도 내에서 신청",sla:"4시간~1영업일",owner:"물류팀",btns:["PR 작성","단가계약 조회","계약 잔여한도","갱신 요청"],access:"PR+단가계약번호",warn:"VIOL-C40: 만료계약 발주 차단"},
+  "L3-090402":{m:"✅ BSM [새 구매요청] → PR 작성",m2:"단가계약번호 기재 필수",m3:"계약 한도 내에서 신청",sla:"4시간~1영업일",owner:"물류팀",btns:["PR 작성","단가계약 조회","계약 잔여한도","갱신 요청"],access:"PR+단가계약번호",warn:"VIOL-C40: 만료계약 발주 차단"},
+  "L3-090403":{m:"✅ BSM [새 구매요청] → PR 작성",m2:"단가계약번호 기재 필수",m3:"계약 한도 내에서 신청",sla:"4시간~1영업일",owner:"물류팀",btns:["PR 작성","단가계약 조회","계약 잔여한도","갱신 요청"],access:"PR+단가계약번호",warn:"VIOL-C40: 만료계약 발주 차단"},
+  "L3-090404":{m:"✅ BSM [새 구매요청] → PR 작성",m2:"단가계약번호 기재 필수",m3:"계약 한도 내에서 신청",sla:"4시간~1영업일",owner:"물류팀",btns:["PR 작성","단가계약 조회","계약 잔여한도","갱신 요청"],access:"PR+단가계약번호",warn:"VIOL-C40: 만료계약 발주 차단"},
+  "L3-090501":{m:"✅ BSM [새 구매요청] → PR 작성",m2:"단가계약번호 기재 필수",m3:"계약 한도 내에서 신청",sla:"4시간~1영업일",owner:"물류팀",btns:["PR 작성","단가계약 조회","계약 잔여한도","갱신 요청"],access:"PR+단가계약번호",warn:"VIOL-C40: 만료계약 발주 차단"},
+  "L3-090502":{m:"✅ BSM [새 구매요청] → PR 작성",m2:"단가계약번호 기재 필수",m3:"계약 한도 내에서 신청",sla:"4시간~1영업일",owner:"물류팀",btns:["PR 작성","단가계약 조회","계약 잔여한도","갱신 요청"],access:"PR+단가계약번호",warn:"VIOL-C40: 만료계약 발주 차단"},
+  "L3-090503":{m:"✅ BSM [새 구매요청] → PR 작성",m2:"단가계약번호 기재 필수",m3:"계약 한도 내에서 신청",sla:"4시간~1영업일",owner:"물류팀",btns:["PR 작성","단가계약 조회","계약 잔여한도","갱신 요청"],access:"PR+단가계약번호",warn:"VIOL-C40: 만료계약 발주 차단"},
+  "L3-090504":{m:"✅ BSM [새 구매요청] → PR 작성",m2:"단가계약번호 기재 필수",m3:"계약 한도 내에서 신청",sla:"4시간~1영업일",owner:"물류팀",btns:["PR 작성","단가계약 조회","계약 잔여한도","갱신 요청"],access:"PR+단가계약번호",warn:"VIOL-C40: 만료계약 발주 차단"},
+  "L3-090601":{m:"🔍 먼저 BSM에서 기존 계약 검색!",m2:"기존계약 있음: PO 직접 생성 (PR 불필요)",m3:"기존계약 없음: PR 작성 → 팀장 승인 → 소싱",sla:"1영업일",owner:"IT팀",btns:["기존계약 검색","PO 직접 생성","신규 PR 작성","IT보안 검토 요청"],access:"기존계약:PO직접",warn:"VIOL-C60: 중복 구독 차단"},
+  "L3-090602":{m:"📋 BSM [새 구매요청] → PR 작성",m2:"CAPEX 예산승인서+사업계획서 첨부 필수",m3:"4~8주 전 요청 권장",sla:"2영업일",owner:"물류팀",btns:["CAPEX PR 작성","예산승인 확인","입찰 일정 조회"],access:"PR 전체 권한",warn:"VIOL-C20: CAPEX 미승인 차단"},
+  "L3-090603":{m:"✍️ BSM [새 구매요청] → PR 직접 작성",m2:"\"지게차, PDA, RFID 리더기등\" 품목 선택 → 요구사양서 첨부 필수",m3:"납기 2~4주 전 요청 권장",sla:"1영업일",owner:"물류팀",btns:["새 PR 작성","AI 사양 도움받기","공급사 Pool 조회","소싱팀 문의"],access:"PR 전체 권한",warn:"VIOL-C10: 특정업체 지정 차단"},
+  "L3-090604":{m:"✍️ BSM [새 구매요청] → PR 직접 작성",m2:"\"IoT, 트랙킹\" 품목 선택 → 요구사양서 첨부 필수",m3:"납기 2~4주 전 요청 권장",sla:"1영업일",owner:"IT팀",btns:["새 PR 작성","AI 사양 도움받기","공급사 Pool 조회","소싱팀 문의"],access:"PR 전체 권한",warn:"VIOL-C10: 특정업체 지정 차단"},
+  "L3-090701":{m:"✅ BSM [새 구매요청] → PR 작성",m2:"단가계약번호 기재 필수",m3:"계약 한도 내에서 신청",sla:"4시간~1영업일",owner:"물류팀",btns:["PR 작성","단가계약 조회","계약 잔여한도","갱신 요청"],access:"PR+단가계약번호",warn:"VIOL-C40: 만료계약 발주 차단"},
+  "L3-090702":{m:"📋 BSM [재무팀 메뉴] → [이용 신청] 클릭",m2:"이용 내용·기간·수량 입력",m3:"⚠️ PR 작성 불가 — 재무팀 담당자가 계약 기반으로 처리",sla:"1영업일",owner:"재무팀",btns:["재무팀 이용 신청","계약 잔여한도 확인","신청 현황"],access:"이용신청만",warn:"VIOL-MD01: PR 시도 차단"},
+  "L3-090703":{m:"✍️ BSM [새 구매요청] → PR 직접 작성",m2:"\"물류 컨설팅\" 품목 선택 → 요구사양서 첨부 필수",m3:"납기 2~4주 전 요청 권장",sla:"1영업일",owner:"물류팀",btns:["새 PR 작성","AI 사양 도움받기","공급사 Pool 조회","소싱팀 문의"],access:"PR 전체 권한",warn:"VIOL-C10: 특정업체 지정 차단"},
+  "L3-090704":{m:"✅ BSM [새 구매요청] → PR 작성",m2:"단가계약번호 기재 필수",m3:"계약 한도 내에서 신청",sla:"4시간~1영업일",owner:"물류팀",btns:["PR 작성","단가계약 조회","계약 잔여한도","갱신 요청"],access:"PR+단가계약번호",warn:"VIOL-C40: 만료계약 발주 차단"},
+  "L3-100101":{m:"📋 BSM [새 구매요청] → PR 작성",m2:"CAPEX 예산승인서+사업계획서 첨부 필수",m3:"4~8주 전 요청 권장",sla:"2영업일",owner:"생산기술팀",btns:["CAPEX PR 작성","예산승인 확인","입찰 일정 조회"],access:"PR 전체 권한",warn:"VIOL-C20: CAPEX 미승인 차단"},
+  "L3-100102":{m:"✍️ BSM [새 구매요청] → PR 직접 작성",m2:"\"금형·지그·공구류\" 품목 선택 → 요구사양서 첨부 필수",m3:"납기 2~4주 전 요청 권장",sla:"1영업일",owner:"생산기술팀",btns:["새 PR 작성","AI 사양 도움받기","공급사 Pool 조회","소싱팀 문의"],access:"PR 전체 권한",warn:"VIOL-C10: 특정업체 지정 차단"},
+  "L3-100201":{m:"✅ BSM [새 구매요청] → PR 작성",m2:"단가계약번호 기재 필수",m3:"계약 한도 내에서 신청",sla:"4시간~1영업일",owner:"생산기술팀",btns:["PR 작성","단가계약 조회","계약 잔여한도","갱신 요청"],access:"PR+단가계약번호",warn:"VIOL-C40: 만료계약 발주 차단"},
+  "L3-100301":{m:"📤 BSM [생산기술팀 메뉴] → [구매 지원 신청] 클릭",m2:"요청 내용·예산·납기 입력 후 제출",m3:"⚠️ PR 직접 작성 불가",sla:"1영업일",owner:"생산기술팀",btns:["생산기술팀 구매지원 신청","진행 현황 조회"],access:"지원신청만",warn:"VIOL-MD01: PR 시도 차단"},
+  "L3-100302":{m:"✅ BSM [새 구매요청] → PR 작성",m2:"단가계약번호 기재 필수",m3:"계약 한도 내에서 신청",sla:"4시간~1영업일",owner:"생산기술팀",btns:["PR 작성","단가계약 조회","계약 잔여한도","갱신 요청"],access:"PR+단가계약번호",warn:"VIOL-C40: 만료계약 발주 차단"},
+  "L3-100303":{m:"📜 BSM [새 구매요청] → PR+수의사유서 작성",m2:"독점 근거자료+가격적정성 검토서 첨부",m3:"연간 동일업체 3회 한도 확인",sla:"1영업일",owner:"생산기술팀",btns:["수의계약 PR 작성","수의사유서 템플릿","원가분석 요청"],access:"PR+사유서 권한",warn:"VIOL-C30: 사유서 미첨부 차단"},
+  "L3-100401":{m:"✅ BSM [새 구매요청] → PR 작성",m2:"단가계약번호 기재 필수",m3:"계약 한도 내에서 신청",sla:"4시간~1영업일",owner:"생산기술팀",btns:["PR 작성","단가계약 조회","계약 잔여한도","갱신 요청"],access:"PR+단가계약번호",warn:"VIOL-C40: 만료계약 발주 차단"},
+  "L3-100402":{m:"📤 BSM [생산기술팀 메뉴] → [구매 지원 신청] 클릭",m2:"요청 내용·예산·납기 입력 후 제출",m3:"⚠️ PR 직접 작성 불가",sla:"1영업일",owner:"생산기술팀",btns:["생산기술팀 구매지원 신청","진행 현황 조회"],access:"지원신청만",warn:"VIOL-MD01: PR 시도 차단"},
+  "L3-100501":{m:"✅ BSM [새 구매요청] → PR 작성",m2:"단가계약번호 기재 필수",m3:"계약 한도 내에서 신청",sla:"4시간~1영업일",owner:"생산기술팀",btns:["PR 작성","단가계약 조회","계약 잔여한도","갱신 요청"],access:"PR+단가계약번호",warn:"VIOL-C40: 만료계약 발주 차단"},
+  "L3-100601":{m:"✍️ BSM [새 구매요청] → PR 직접 작성",m2:"\"불용자산 매각·폐기물 처리\" 품목 선택 → 요구사양서 첨부 필수",m3:"납기 2~4주 전 요청 권장",sla:"1영업일",owner:"생산기술팀",btns:["새 PR 작성","AI 사양 도움받기","공급사 Pool 조회","소싱팀 문의"],access:"PR 전체 권한",warn:"VIOL-C10: 특정업체 지정 차단"},
+  "L3-110101":{m:"📐 BSM [새 구매요청] → PR+SOW 작성",m2:"산출물·WBS·검수기준 명확히 기재",m3:"4~8주 전 요청 권장",sla:"2영업일",owner:"R&D팀",btns:["프로젝트 PR 작성","SOW 템플릿","NDA 요청","마일스톤 설정"],access:"PR+SOW 권한",warn:"VIOL-C50: SOW 미첨부 차단"},
+  "L3-110102":{m:"📐 BSM [새 구매요청] → PR+SOW 작성",m2:"산출물·WBS·검수기준 명확히 기재",m3:"4~8주 전 요청 권장",sla:"2영업일",owner:"R&D팀",btns:["프로젝트 PR 작성","SOW 템플릿","NDA 요청","마일스톤 설정"],access:"PR+SOW 권한",warn:"VIOL-C50: SOW 미첨부 차단"},
+  "L3-110103":{m:"📐 BSM [새 구매요청] → PR+SOW 작성",m2:"산출물·WBS·검수기준 명확히 기재",m3:"4~8주 전 요청 권장",sla:"2영업일",owner:"R&D팀",btns:["프로젝트 PR 작성","SOW 템플릿","NDA 요청","마일스톤 설정"],access:"PR+SOW 권한",warn:"VIOL-C50: SOW 미첨부 차단"},
+  "L3-110104":{m:"✍️ BSM [새 구매요청] → PR 직접 작성",m2:"\"제품 시험·평가 용역\" 품목 선택 → 요구사양서 첨부 필수",m3:"납기 2~4주 전 요청 권장",sla:"1영업일",owner:"R&D팀",btns:["새 PR 작성","AI 사양 도움받기","공급사 Pool 조회","소싱팀 문의"],access:"PR 전체 권한",warn:"VIOL-C10: 특정업체 지정 차단"},
+  "L3-110201":{m:"✍️ BSM [새 구매요청] → PR 직접 작성",m2:"\"개발용 회로·전자 부품\" 품목 선택 → 요구사양서 첨부 필수",m3:"납기 2~4주 전 요청 권장",sla:"1영업일",owner:"R&D팀",btns:["새 PR 작성","AI 사양 도움받기","공급사 Pool 조회","소싱팀 문의"],access:"PR 전체 권한",warn:"VIOL-C10: 특정업체 지정 차단"},
+  "L3-110202":{m:"✍️ BSM [새 구매요청] → PR 직접 작성",m2:"\"개발용 기구·구조 부품\" 품목 선택 → 요구사양서 첨부 필수",m3:"납기 2~4주 전 요청 권장",sla:"1영업일",owner:"R&D팀",btns:["새 PR 작성","AI 사양 도움받기","공급사 Pool 조회","소싱팀 문의"],access:"PR 전체 권한",warn:"VIOL-C10: 특정업체 지정 차단"},
+  "L3-110203":{m:"✍️ BSM [새 구매요청] → PR 직접 작성",m2:"\"소재·화학 물질\" 품목 선택 → 요구사양서 첨부 필수",m3:"납기 2~4주 전 요청 권장",sla:"1영업일",owner:"R&D팀",btns:["새 PR 작성","AI 사양 도움받기","공급사 Pool 조회","소싱팀 문의"],access:"PR 전체 권한",warn:"VIOL-C10: 특정업체 지정 차단"},
+  "L3-110301":{m:"✍️ BSM [새 구매요청] → PR 직접 작성",m2:"\"전자·회로 계측기\" 품목 선택 → 요구사양서 첨부 필수",m3:"납기 2~4주 전 요청 권장",sla:"1영업일",owner:"R&D팀",btns:["새 PR 작성","AI 사양 도움받기","공급사 Pool 조회","소싱팀 문의"],access:"PR 전체 권한",warn:"VIOL-C10: 특정업체 지정 차단"},
+  "L3-110302":{m:"✍️ BSM [새 구매요청] → PR 직접 작성",m2:"\"환경·신뢰성 시험장비\" 품목 선택 → 요구사양서 첨부 필수",m3:"납기 2~4주 전 요청 권장",sla:"1영업일",owner:"R&D팀",btns:["새 PR 작성","AI 사양 도움받기","공급사 Pool 조회","소싱팀 문의"],access:"PR 전체 권한",warn:"VIOL-C10: 특정업체 지정 차단"},
+  "L3-110303":{m:"✍️ BSM [새 구매요청] → PR 직접 작성",m2:"\"광학·이미징 분석장비\" 품목 선택 → 요구사양서 첨부 필수",m3:"납기 2~4주 전 요청 권장",sla:"1영업일",owner:"R&D팀",btns:["새 PR 작성","AI 사양 도움받기","공급사 Pool 조회","소싱팀 문의"],access:"PR 전체 권한",warn:"VIOL-C10: 특정업체 지정 차단"},
+  "L3-110304":{m:"📋 BSM [새 구매요청] → PR 작성",m2:"CAPEX 예산승인서+사업계획서 첨부 필수",m3:"4~8주 전 요청 권장",sla:"2영업일",owner:"R&D팀",btns:["CAPEX PR 작성","예산승인 확인","입찰 일정 조회"],access:"PR 전체 권한",warn:"VIOL-C20: CAPEX 미승인 차단"},
+  "L3-110401":{m:"🔍 먼저 BSM에서 기존 계약 검색!",m2:"기존계약 있음: PO 직접 생성 (PR 불필요)",m3:"기존계약 없음: PR 작성 → 팀장 승인 → 소싱",sla:"1영업일",owner:"R&D팀",btns:["기존계약 검색","PO 직접 생성","신규 PR 작성","IT보안 검토 요청"],access:"기존계약:PO직접",warn:"VIOL-C60: 중복 구독 차단"},
+  "L3-110402":{m:"🔍 먼저 BSM에서 기존 계약 검색!",m2:"기존계약 있음: PO 직접 생성 (PR 불필요)",m3:"기존계약 없음: PR 작성 → 팀장 승인 → 소싱",sla:"1영업일",owner:"R&D팀",btns:["기존계약 검색","PO 직접 생성","신규 PR 작성","IT보안 검토 요청"],access:"기존계약:PO직접",warn:"VIOL-C60: 중복 구독 차단"},
+  "L3-110501":{m:"✍️ BSM [새 구매요청] → PR 직접 작성",m2:"\"국내 안전·전기·전자파 인증\" 품목 선택 → 요구사양서 첨부 필수",m3:"납기 2~4주 전 요청 권장",sla:"1영업일",owner:"R&D팀",btns:["새 PR 작성","AI 사양 도움받기","공급사 Pool 조회","소싱팀 문의"],access:"PR 전체 권한",warn:"VIOL-C10: 특정업체 지정 차단"},
+  "L3-110502":{m:"✍️ BSM [새 구매요청] → PR 직접 작성",m2:"\"해외 안전·환경·품질·유해물질 인증\" 품목 선택 → 요구사양서 첨부 필수",m3:"납기 2~4주 전 요청 권장",sla:"1영업일",owner:"R&D팀",btns:["새 PR 작성","AI 사양 도움받기","공급사 Pool 조회","소싱팀 문의"],access:"PR 전체 권한",warn:"VIOL-C10: 특정업체 지정 차단"},
+  "L3-110503":{m:"✍️ BSM [새 구매요청] → PR 직접 작성",m2:"\"성능·신뢰성 시험 서비스\" 품목 선택 → 요구사양서 첨부 필수",m3:"납기 2~4주 전 요청 권장",sla:"1영업일",owner:"R&D팀",btns:["새 PR 작성","AI 사양 도움받기","공급사 Pool 조회","소싱팀 문의"],access:"PR 전체 권한",warn:"VIOL-C10: 특정업체 지정 차단"},
+  "L3-110501B":{m:"📜 BSM [새 구매요청] → PR+수의사유서 작성",m2:"독점 근거자료+가격적정성 검토서 첨부",m3:"연간 동일업체 3회 한도 확인",sla:"1영업일",owner:"법무팀",btns:["수의계약 PR 작성","수의사유서 템플릿","원가분석 요청"],access:"PR+사유서 권한",warn:"VIOL-C30: 사유서 미첨부 차단"},
+  "L3-110502B":{m:"📜 BSM [새 구매요청] → PR+수의사유서 작성",m2:"독점 근거자료+가격적정성 검토서 첨부",m3:"연간 동일업체 3회 한도 확인",sla:"1영업일",owner:"법무팀",btns:["수의계약 PR 작성","수의사유서 템플릿","원가분석 요청"],access:"PR+사유서 권한",warn:"VIOL-C30: 사유서 미첨부 차단"},
+  "L3-110503B":{m:"📜 BSM [새 구매요청] → PR+수의사유서 작성",m2:"독점 근거자료+가격적정성 검토서 첨부",m3:"연간 동일업체 3회 한도 확인",sla:"1영업일",owner:"법무팀",btns:["수의계약 PR 작성","수의사유서 템플릿","원가분석 요청"],access:"PR+사유서 권한",warn:"VIOL-C30: 사유서 미첨부 차단"},
+};
+
+/* ═══════════════════════════════════════════════════════════════
+   UX Groups — 사용자 체감 안내 유형 (Intake Complete Spec §3, §7.3)
+   GT 코드는 사용자에게 노출하지 않음 (§7.2)
+   ═══════════════════════════════════════════════════════════════ */
+var UX_GROUPS={
+  catalog:{
+    id:"catalog",icon:"🛒",name:"카탈로그 주문",
+    color:{bg:"#F0FDF4",fg:"#166534",accent:"#22C55E",border:"#86EFAC"},
+    guide:"등록된 카탈로그 품목이에요.\n카탈로그에서 검색 → 수량 선택 → 주문하시면 됩니다.",
+    youDo:"카탈로그 시스템에서 직접 주문",
+    next:"100만원 이하 자동 승인 → 배송 2~3일",
+    form:null,
+  },
+  rental:{
+    id:"rental",icon:"🔄",name:"렌탈/리스 신청",
+    color:{bg:"#FFF7ED",fg:"#9A3412",accent:"#EA580C",border:"#FDBA74"},
+    guide:"우리 회사에 기존 계약이 있는 렌탈/리스 품목이에요.\n신청서만 작성하시면 계약 담당자가 처리합니다.",
+    youDo:"신청서 작성 (30초)",
+    next:"담당자 확인 → 업체에 설치 요청 → 설치 (3~5일)",
+    form:null,bsmAction:true,
+  },
+  subscription:{
+    id:"subscription",icon:"💳",name:"구독 신청/변경",
+    color:{bg:"#FDF4FF",fg:"#86198F",accent:"#C026D3",border:"#E879F9"},
+    guide:"기존 구독 계약이 있는 서비스예요.\n변경/추가 사항만 신청하시면 IT팀에서 처리합니다.",
+    youDo:"구독 변경 신청 (30초)",
+    next:"IT 담당자 확인 → 라이선스 처리 → 완료 (1~3일)",
+    form:null,bsmAction:true,
+  },
+  contract:{
+    id:"contract",icon:"📄",name:"계약 발주 신청",
+    color:{bg:"#EFF6FF",fg:"#1E3A8A",accent:"#1E40AF",border:"#93C5FD"},
+    guide:"기존 계약이 있는 품목이에요.\n계약 조건 범위 내에서 추가 발주만 하면 됩니다.",
+    youDo:"발주 신청 (수량, 납기만)",
+    next:"담당자 확인 → 계약 업체에 발주 → 납품",
+    form:null,bsmAction:true,
+  },
+  general_pr:{
+    id:"general_pr",icon:"📝",name:"구매요청서 작성",
+    color:{bg:"#EFF6FF",fg:"#1E40AF",accent:"#3B82F6",border:"#93C5FD"},
+    guide:"구매요청서(PR)를 작성해 주세요.\n사양과 수량을 정리하면 부서장 승인 후 구매팀에서 진행합니다.",
+    youDo:"구매요청서 작성 (사양, 수량, 예산, 납기)",
+    next:"부서장 승인 → 구매팀 접수 → 업체 선정 → 납품",
+    form:null,bsmAction:true,
+  },
+  rfq:{
+    id:"rfq",icon:"📊",name:"업체 비교 구매요청",
+    color:{bg:"#EDE9FE",fg:"#5B21B6",accent:"#7C3AED",border:"#C4B5FD"},
+    guide:"3곳 이상 업체 비교가 필요한 구매예요.\n사양을 작성해 주시면 구매팀에서 경쟁 견적을 진행합니다.",
+    youDo:"구매요청서 작성 (사양을 상세하게)",
+    next:"구매팀 접수 → 3곳 견적 비교 → 업체 선정 → 계약 → 납품 (2~3주)",
+    form:null,bsmAction:true,
+  },
+  service:{
+    id:"service",icon:"🤝",name:"서비스 구매요청",
+    color:{bg:"#ECFDF5",fg:"#065F46",accent:"#059669",border:"#6EE7B7"},
+    guide:"용역·컨설팅 등 서비스 구매예요.\n서비스 범위와 기간을 알려주시면 구매팀에서 업체를 찾아드립니다.",
+    youDo:"서비스 요청서 작성 (범위, 기간, 예산)",
+    next:"구매팀 접수 → 업체 탐색 → 견적 비교 → 계약 (2~4주)",
+    form:null,bsmAction:true,
+  },
+  emergency:{
+    id:"emergency",icon:"⚡",name:"긴급 구매",
+    color:{bg:"#FEF2F2",fg:"#991B1B",accent:"#EF4444",border:"#FCA5A5"},
+    guide:"긴급 구매로 즉시 처리합니다.\n품목과 수량만 알려주세요. 승인 절차가 간소화됩니다.",
+    youDo:"품목, 수량만 입력 (지금 바로)",
+    next:"즉시 승인 → 당일~1일 내 처리 → 사후 보고서 3일 내 제출",
+    form:null,bsmAction:true,
+  },
+  strategic:{
+    id:"strategic",icon:"🏢",name:"전략/자산 구매",
+    color:{bg:"#EFF6FF",fg:"#1E3A8A",accent:"#1E40AF",border:"#93C5FD"},
+    guide:"경영진 승인이 필요한 고액 구매입니다.\n투자 계획서와 함께 구매요청을 올려주세요.\n구매팀이 전 과정을 안내합니다.",
+    youDo:"구매요청서 + 투자계획서 작성",
+    next:"부서장 → 본부장 → 경영진 승인 → 구매팀 전담 진행 (4~8주)",
+    form:null,bsmAction:true,
+  },
+  special:{
+    id:"special",icon:"📋",name:"특별 승인 구매",
+    color:{bg:"#FFFBEB",fg:"#92400E",accent:"#D97706",border:"#FCD34D"},
+    guide:"사전 승인이 필요한 특수 구매예요.\n사유서를 작성해 주시면 구매팀에서 승인 절차를 안내합니다.",
+    youDo:"사유서 + 구매요청서 작성",
+    next:"구매팀 사전 검토 → 승인권자 결재 → 진행 (2~4주)",
+    form:null,bsmAction:true,
+  },
+  contact_only:{
+    id:"contact_only",icon:"📞",name:"계약 업체 연락처 안내",
+    color:{bg:"#EFF6FF",fg:"#1E3A8A",accent:"#1E40AF",border:"#93C5FD"},
+    guide:"계약된 서비스 업체가 있어요.\n아래 연락처로 직접 전화하시면 됩니다.",
+    youDo:"전화 한 통이면 끝",
+    next:"전화 신청 → 서비스 이용 → 비용 월말 정산",
+    form:null,
+    contacts:[
+      {l3:"L3-DRIVER",name:"대리기사 서비스",vendor:"카카오T 비즈니스",phone:"1599-9500",note:"법인 계정 등록됨. 이름/부서 말씀하시면 됩니다."},
+      {l3:"L3-020104",name:"상조·경조 서비스",vendor:"교원라이프",phone:"1588-1234",note:"경조화환·상조 접수. 부서·성명 말씀하시면 됩니다."},
+      {l3:"L3-010301",name:"택배·퀵 서비스",vendor:"CJ대한통운 법인",phone:"1588-1255",note:"법인 계약 택배. 접수번호가 자동 발급됩니다."},
+      {l3:"L3-010201",name:"명함·사내 인쇄물",vendor:"이지인쇄",phone:"02-1234-5678",note:"법인 계정 온라인 주문. 2~3일 소요."},
+      {l3:"L3-040201",name:"출장 예약",vendor:"한진여행 TMC",phone:"02-3456-7890",note:"법인 출장 예약. 부서·일정 말씀하시면 됩니다."},
+    ],
+  },
+  dept_request:{
+    id:"dept_request",icon:"🏢",name:"주관부서 이용신청",
+    color:{bg:"#EFF6FF",fg:"#1E3A8A",accent:"#1E40AF",border:"#93C5FD"},
+    guide:"이 품목은 주관부서에서 전담합니다.\nBSM에서 이용 신청하시면 주관부서 담당자가 처리합니다.",
+    youDo:"BSM 이용신청서로 이동",
+    next:"주관부서 접수 → 검토·승인 → 계약/소싱 처리",
+    form:null,bsmAction:true,
+  },
+};
+
+var TENANT_DEPT_OVERRIDE={};
+function getOwner(l3Code){
+  if(TENANT_DEPT_OVERRIDE[l3Code])return TENANT_DEPT_OVERRIDE[l3Code];
+  var msg=L3_MSG[l3Code];
+  return msg&&msg.owner?msg.owner:"";
+}
+
+/* ═══════════════════════════════════════════════════════════════
+   Navigation Engine — Category First Pipeline
+   설계문서: Navigation Engine Implementation v1.0
+   Pipeline: Phase1 Category → Phase2 Condition → Phase3 Intent → Phase4 GT
+   ═══════════════════════════════════════════════════════════════ */
+
+// ── Phase 1: Category Hypothesis (§2.2 — 가장 안정적 신호) ──
+// cluster: 카테고리 성격 태그 (Decision Tree §4.4 분기용)
+// ═══ 152개 L3 품목 카테고리 (차세대 품목체계 v0317 + DRIVER) ═══
+// SW10: 기존 34개 → 152개 전량 등록
+
+var CATEGORIES=[
+  // ── 사무·총무 ──
+  {l3:"L3-010101",name:"사무용품·문구",cluster:"catalog",kw:["사무용품", "볼펜", "사인펜", "노트", "복사용지", "A4", "포스트잇", "메모지", "스테이플러", "가위", "풀", "클립", "파일", "바인더", "화이트보드", "마커", "지우개", "테이프", "필기구", "문구", "복사지", "용지", "토너", "수정테이프", "형광펜", "건전지", "봉투", "라벨", "잉크", "연필", "샤프", "오피스", "소모품", "종이컵", "물티슈", "커피", "생수", "간식", "음료", "다과", "휴지", "티슈"]},
+  {l3:"L3-010102",name:"근무복·유니폼",cluster:"service",kw:["근무복", "유니폼", "작업복", "안전복", "방한복", "안전화", "방한화", "세탁", "사원복", "동복", "하복", "조끼", "점퍼", "명찰", "CI유니폼"]},
+  {l3:"L3-010103",name:"도서·정보 구독",cluster:"subscription",kw:["정보", "도서", "서적", "학술지", "신문", "잡지", "구독", "정기간행물", "전자책", "e-book", "DB", "데이터베이스", "뉴스레터", "법령정보"]},
+  {l3:"L3-010201",name:"명함·사내 인쇄물",cluster:"contact",kw:["인쇄물", "사내", "명함", "인쇄", "전단지", "리플렛", "양식지", "봉투", "사내보", "뉴스레터", "CI인쇄", "스티커", "라벨", "브로슈어", "카탈로그"]},
+  {l3:"L3-010301",name:"국내 택배·퀵·행랑 서비스",cluster:"contact",kw:["서비스", "국내", "택배", "퀵서비스", "행랑", "등기", "소포", "배송", "발송", "우편", "내부배달", "서류배달", "물품발송", "당일배송"]},
+  {l3:"L3-010302",name:"통·번역 서비스",cluster:"service",kw:["서비스", "번역", "통역", "영어", "일본어", "중국어", "동시통역", "순차통역", "문서번역", "현지화", "로컬라이제이션", "NDA"]},
+  {l3:"L3-010303",name:"전자데이터·정보 구매",cluster:"subscription",kw:["구매", "정보", "전자데이터", "데이터", "신용정보", "기업정보", "시장조사", "특허검색", "법령DB", "IHS", "나이스", "한국기업데이터", "키프리스", "통계"]},
+  {l3:"L3-010401",name:"냉난방 렌탈, 커피머신",cluster:"rental",kw:["렌탈", "", "냉난방", "에어컨", "히터", "커피머신", "정수기", "공기청정기", "탕비실", "온풍기", "냉풍기", "제습기", "가습기", "제빙기"]},
+  // ── 인사·복리후생 ──
+  {l3:"L3-020101",name:"구내식당·케이터링·전자식권",cluster:"service",kw:["구내식당", "급식", "케이터링", "식권", "전자식권", "모바일식권", "도시락", "단체급식", "식자재", "조식", "중식", "석식"]},
+  {l3:"L3-020102",name:"건강검진 서비스",cluster:"service",kw:["서비스", "건강검진", "종합검진", "특수검진", "채용검진", "일반검진", "병원", "건강증진센터", "검진패키지", "건강관리", "검진"]},
+  {l3:"L3-020103",name:"통근버스·셔틀 서비스",cluster:"service",kw:["서비스", "통근버스", "셔틀", "출퇴근", "전세버스", "운행", "노선", "배차", "통근", "교통편의", "임차버스"]},
+  {l3:"L3-020104",name:"상조·경조 서비스",cluster:"contact",kw:["서비스", "상조", "경조", "화환", "조화", "근조", "축하", "출산", "결혼", "장례", "부조", "꽃배달", "경조금", "상조서비스", "부의", "축의"]},
+  {l3:"L3-020105",name:"간식·생수 서비스",cluster:"service",kw:["서비스", "간식", "생수", "음료", "커피", "과일", "스낵", "다과", "탕비실", "자판기", "간식배송", "구독간식"]},
+  {l3:"L3-020106",name:"기념일 선물 서비스",cluster:"service",kw:["서비스", "선물", "생일선물", "기념일", "명절", "설", "추석", "기프트", "상품권", "모바일상품권", "기프티콘", "입사기념"]},
+  {l3:"L3-020201",name:"법정 의무 교육",cluster:"service",kw:["교육", "의무", "법정", "법정교육", "의무교육", "산업안전", "성희롱", "개인정보", "장애인인식", "직장내괴롭힘", "이러닝", "집합교육", "수료", "안전교육"]},
+  {l3:"L3-020202",name:"어학·전문 기술교육",cluster:"service",kw:["전문", "어학", "어학교육", "영어", "일본어", "중국어", "직무교육", "리더십", "OJT", "자격증", "기술교육", "MBA", "외부교육"]},
+  {l3:"L3-020203",name:"온라인 교육 플랫폼",cluster:"service",kw:["교육", "온라인", "이러닝", "온라인교육", "LMS", "플랫폼", "구독", "패스트캠퍼스", "클래스101", "Udemy", "LinkedIn", "원격교육"]},
+  {l3:"L3-020301",name:"채용 대행 서비스",cluster:"service",kw:["서비스", "대행", "채용", "헤드헌팅", "RPO", "잡코리아", "사람인", "원티드", "인크루트", "면접", "공고", "서치펌", "인재", "리크루팅"]},
+  {l3:"L3-020302",name:"파견도급 서비스·아르바이트",cluster:"service",kw:["서비스", "파견도급", "파견", "도급", "아르바이트", "일용직", "인력공급", "인력파견", "용역", "임시직", "계약직", "아웃소싱", "도우미", "행사도우미", "행사인력"]},
+  {l3:"L3-020401",name:"주재원이사·해외급여·비자지원",cluster:"professional",kw:["비자지원", "주재원이사", "주재원", "해외이사", "비자", "취업허가", "EOR", "해외급여", "리로케이션", "주거", "국제이주", "현지법인"]},
+  // ── 시설·건물관리 ──
+  {l3:"L3-030101",name:"신축·증축공사",cluster:"capex",kw:["증축공사", "신축", "증축", "건설", "공사", "사옥", "공장", "물류센터", "설계", "시공", "건축", "감리", "기성", "준공"]},
+  {l3:"L3-030102",name:"인테리어·사무공간공사",cluster:"capex",kw:["사무공간공사", "인테리어", "리모델링", "사무공간", "파티션", "바닥", "천장", "도배", "도장", "조명", "사무실공사", "오피스인테리어", "공사", "시설공사"]},
+  {l3:"L3-030103",name:"매장·전시공간 공사",cluster:"capex",kw:["공사", "전시공간", "매장", "전시", "쇼룸", "부스", "매장인테리어", "디스플레이", "CI", "리테일", "점포", "간판", "사인"]},
+  {l3:"L3-030104",name:"수선·유지보수 공사",cluster:"capex",kw:["공사", "수선", "유지보수", "보수", "하자", "누수", "방수", "도장", "배관", "전기", "소방", "긴급수리", "시설보수"]},
+  {l3:"L3-030105",name:"설계·감리 서비스",cluster:"capex",kw:["서비스", "설계", "감리", "건축설계", "인테리어설계", "기계설비설계", "건축사", "감리원", "설계도", "도면"]},
+  {l3:"L3-030106",name:"사무실 철거 및 이사 서비스",cluster:"capex",kw:["서비스", "사무실", "철거", "이사", "이전", "원상복구", "사무실이전", "이사업체", "폐기물", "이삿짐", "해체", "복원"]},
+  {l3:"L3-030201",name:"청소·미화 용역",cluster:"facility",kw:["용역", "청소", "미화", "환경미화", "건물청소", "사무실청소", "바닥왁스", "유리창", "카펫", "일일청소", "정기청소", "시설관리", "경비", "보안경비", "경비용역"]},
+  {l3:"L3-030202",name:"보안경비·물리보안 용역",cluster:"facility",kw:["용역", "물리보안", "보안경비", "경비", "보안", "CCTV", "출입통제", "경비원", "순찰", "영상감시", "무인경비", "보안시스템", "카드키"]},
+  {l3:"L3-030203",name:"방역·해충방제 용역",cluster:"facility",kw:["용역", "방역", "해충", "소독", "바퀴벌레", "쥐", "살균", "해충방제", "정기방역", "세스코", "위생"]},
+  {l3:"L3-030204",name:"조경·환경미화 용역",cluster:"facility",kw:["용역", "환경미화", "조경", "녹지", "수목", "잔디", "화분", "정원", "가지치기", "제초", "식재", "플랜테리어", "실내조경", "엘리베이터", "승강기", "공조", "냉난방유지", "보일러", "발전기", "UPS"]},
+  {l3:"L3-030205",name:"안전점검·법정검사 용역",cluster:"facility",kw:["용역", "안전점검", "법정검사", "승강기", "소방점검", "전기점검", "가스점검", "안전진단", "정밀안전진단", "정기검사"]},
+  {l3:"L3-030301",name:"복합기·프린터 렌탈",cluster:"rental",kw:["복합기", "프린터", "렌탈", "토너", "출력", "복사기", "스캐너", "팩스", "MPS", "인쇄관리", "출력량", "프린터렌탈", "스캐너렌탈"]},
+  {l3:"L3-030302",name:"정수기·공기청정기·비데 렌탈",cluster:"rental",kw:["정수기", "공기청정기", "비데", "렌탈", "필터", "코웨이", "청호나이스", "SK매직", "교원웰스", "관리", "냉온수기"]},
+  {l3:"L3-030303",name:"사무용 가구·집기",cluster:"capex",kw:["사무용", "가구", "책상", "의자", "캐비닛", "파티션", "집기", "사무가구", "회의테이블", "소파", "서랍장", "사물함", "선반"]},
+  {l3:"L3-030401",name:"전기·가스·수도·재생에너지",cluster:"maintenance",kw:["전기", "가스", "수도", "에너지", "태양광", "RE100", "재생에너지", "전력", "요금", "EMS", "에너지관리", "PPA"]},
+  // ── 차량·출장 ──
+  {l3:"L3-040101",name:"법인차량 구매·렌탈·리스",cluster:"capex",kw:["구매", "법인차량", "법인차", "렌탈", "리스", "차량구매", "장기렌트", "승용차", "화물차", "운용리스", "금융리스", "차량배정", "차량리스", "렌터카"]},
+  {l3:"L3-040102",name:"차량 유지관리(수리·보험)",cluster:"service",kw:["수리", "유지관리", "차량", "차량수리", "정비", "타이어", "보험", "자동차보험", "엔진오일", "세차", "차량관리", "정기점검", "사고수리"]},
+  {l3:"L3-040201",name:"항공·철도·숙박",cluster:"contact",kw:["항공", "비행기", "KTX", "철도", "호텔", "숙박", "출장", "TMC", "예약", "출장비", "여비", "항공권", "비즈니스클래스"]},
+  {l3:"L3-040202",name:"출장용 차량렌트·해외로밍",cluster:"contact",kw:["출장용", "렌터카", "로밍", "와이파이", "교통카드", "택시", "출장차량", "해외로밍", "포켓와이파이", "유심", "차량렌트"]},
+  {l3:"L3-040203",name:"비자·여권 행정 지원",cluster:"contact",kw:["지원", "행정", "비자", "여권", "출입국", "대사관", "영사관", "비자대행", "여권갱신", "워크퍼밋", "체류허가"]},
+  // ── 보험 서비스 ──
+  {l3:"L3-050101",name:"임직원 단체보험",cluster:"insurance",kw:["임직원", "단체보험", "생명보험", "상해보험", "건강보험", "임직원보험", "복리후생", "보험갱신", "손해율", "보험"]},
+  {l3:"L3-050201",name:"자산·화재보험",cluster:"insurance",kw:["자산", "화재보험", "재산보험", "자산보험", "건물보험", "설비보험", "기계보험", "재산종합", "보험가액"]},
+  {l3:"L3-050301",name:"배상책임보험",cluster:"insurance",kw:["배상책임보험", "배상책임", "PL보험", "영업배상", "전문직배상", "시설소유자", "제조물", "생산물", "배상한도"]},
+  {l3:"L3-050401",name:"운송보험(국내·해상·항공)",cluster:"insurance",kw:["항공", "해상", "국내", "운송보험", "적하보험", "해상보험", "항공보험", "화물보험", "적하", "ICC", "보상한도", "클레임"]},
+  {l3:"L3-050501",name:"법정 의무보험",cluster:"insurance",kw:["법정", "의무보험", "산재", "고용보험", "자동차보험", "건설공제", "법정보험", "4대보험", "가입의무"]},
+  {l3:"L3-050601",name:"보증보험",cluster:"insurance",kw:["보증보험", "이행보증", "입찰보증", "하자보증", "선급금보증", "지급보증", "SGI", "보증증권"]},
+  {l3:"L3-050701",name:"법인차량 보험",cluster:"insurance",kw:["보험", "법인차량", "차량보험", "자동차보험", "자차", "대인", "대물", "무보험차", "자기부담금", "법인차보험", "할인"]},
+  {l3:"L3-050702",name:"출장·파견 여행자 보험",cluster:"insurance",kw:["보험", "파견", "출장", "여행자보험", "해외보험", "출장보험", "파견보험", "의료보험", "긴급구호", "해외여행", "여행자"]},
+  {l3:"L3-050801",name:"사이버·임원배상 보험",cluster:"insurance",kw:["보험", "사이버", "사이버보험", "D&O", "임원배상", "해킹", "데이터유출", "랜섬웨어", "정보유출", "사이버위험", "임원책임"]},
+  // ── 전문용역·컨설팅 ──
+  {l3:"L3-060101",name:"법무·소송 서비스",cluster:"professional",kw:["서비스", "법무", "소송", "변호사", "로펌", "법률자문", "계약검토", "중재", "규제", "분쟁", "소송대리", "법률의견", "법률"]},
+  {l3:"L3-060201",name:"전략·운영 컨설팅",cluster:"professional",kw:["컨설팅", "운영", "전략", "전략컨설팅", "경영컨설팅", "조직진단", "M&A", "PMI", "BPR", "운영혁신", "원가절감", "맥킨지", "BCG", "자문", "전략자문"]},
+  {l3:"L3-060202",name:"IT 컨설팅",cluster:"professional",kw:["컨설팅", "IT", "IT컨설팅", "DX", "디지털전환", "시스템설계", "아키텍처", "IT전략", "ISP", "EA", "벤더선정", "RFP"]},
+  {l3:"L3-060203",name:"노무 컨설팅",cluster:"professional",kw:["컨설팅", "노무", "노동법", "취업규칙", "인사제도", "노사", "노동분쟁", "공인노무사", "인사컨설팅", "해고", "징계"]},
+  {l3:"L3-060301",name:"회계·세무 서비스",cluster:"professional",kw:["서비스", "회계", "세무", "감사", "외부감사", "세무조정", "법인세", "부가세", "이전가격", "IFRS", "세무신고", "Big4", "회계감사", "세무자문"]},
+  {l3:"L3-060302",name:"급여대행·연말정산 서비스",cluster:"professional",kw:["서비스", "급여대행", "급여아웃소싱", "연말정산", "4대보험", "페이롤", "원천세", "급여계산", "급여명세", "퇴직금"]},
+  {l3:"L3-060401",name:"컨택센터 용역",cluster:"professional",kw:["용역", "컨택센터", "콜센터", "고객센터", "상담", "인바운드", "아웃바운드", "ARS", "챗봇", "CS", "고객응대"]},
+  // ── 마케팅 ──
+  {l3:"L3-070101",name:"TV·라디오·신문·OOH 광고",cluster:"marketing",kw:["광고", "신문", "TV", "TV광고", "라디오", "신문광고", "옥외광고", "OOH", "버스광고", "지하철광고", "빌보드", "GRP", "CPM", "CPRP"]},
+  {l3:"L3-070201",name:"포털 검색광고",cluster:"marketing",kw:["포털", "검색광고", "SEM", "키워드광고", "네이버광고", "구글애즈", "CPC", "클릭", "브랜드검색", "파워링크", "검색최적화", "광고", "마케팅", "디지털마케팅"]},
+  {l3:"L3-070202",name:"소셜 미디어 광고",cluster:"marketing",kw:["광고", "미디어", "소셜", "SNS광고", "인스타그램", "페이스북", "유튜브", "틱톡", "소셜미디어", "메타", "CPE", "도달률", "피드광고"]},
+  {l3:"L3-070203",name:"퍼포먼스·프로그래매틱",cluster:"marketing",kw:["퍼포먼스", "프로그래매틱", "RTB", "DSP", "DMP", "ROAS", "CPA", "리타게팅", "전환", "어트리뷰션"]},
+  {l3:"L3-070204",name:"SEO·CRM 마케팅",cluster:"marketing",kw:["마케팅", "SEO", "CRM", "검색최적화", "마케팅자동화", "이메일마케팅", "고객데이터", "CDP", "세그먼트", "리드너처링"]},
+  {l3:"L3-070301",name:"광고 영상 제작",cluster:"marketing",kw:["제작", "영상", "광고", "영상제작", "CF", "광고영상", "촬영", "편집", "프로덕션", "모션그래픽", "유튜브영상", "바이럴영상", "홍보영상"]},
+  {l3:"L3-070302",name:"인쇄·디자인 제작",cluster:"marketing",kw:["제작", "디자인", "인쇄", "인쇄디자인", "그래픽", "포스터", "리플렛", "패키지디자인", "브로슈어", "편집디자인", "일러스트", "CI/BI"]},
+  {l3:"L3-070303",name:"인플루언서·바이럴 마케팅",cluster:"marketing",kw:["마케팅", "인플루언서", "바이럴", "KOL", "유튜버", "인스타그래머", "체험단", "리뷰", "구전", "MCN", "협찬"]},
+  {l3:"L3-070304",name:"모델 계약·스튜디오 제작",cluster:"marketing",kw:["제작", "계약", "모델", "스튜디오", "촬영", "사진", "연예인", "광고모델", "초상권", "사용기간", "화보", "포토그래퍼"]},
+  {l3:"L3-070401",name:"소비자 이벤트",cluster:"marketing",kw:["소비자", "이벤트", "프로모션", "소비자행사", "체험", "시음", "시식", "팝업스토어", "론칭", "경품", "추첨"]},
+  {l3:"L3-070402",name:"전시·박람회",cluster:"marketing",kw:["전시", "박람회", "COEX", "KINTEX", "부스", "전시부스", "장치", "전시디자인", "B2B전시", "컨벤션"]},
+  {l3:"L3-070403",name:"스폰서십",cluster:"marketing",kw:["스폰서", "후원", "스포츠", "문화행사", "스폰서십", "네이밍", "협찬", "브랜드노출", "타이틀스폰서"]},
+  {l3:"L3-070404",name:"행사 운영 지원",cluster:"marketing",kw:["지원", "운영", "행사", "세미나", "컨퍼런스", "MICE", "사내행사", "워크숍", "행사대행", "음향", "조명", "무대", "PCO"]},
+  {l3:"L3-070501",name:"판촉물·기프트",cluster:"marketing",kw:["판촉물", "기프트", "기념품", "경품", "에코백", "텀블러", "볼펜", "USB", "캘린더", "판촉", "로고인쇄"]},
+  {l3:"L3-070502",name:"MD·판촉·판매 대행",cluster:"marketing",kw:["대행", "판매", "MD", "판촉", "판매대행", "프로모터", "매장인력", "시식", "시음", "매장파견", "세일즈", "필드마케팅"]},
+  {l3:"L3-070503",name:"매장용 소모품",cluster:"marketing",kw:["소모품", "매장용", "매장소모품", "쇼핑백", "포장재", "리본", "택", "행거태그", "포장지", "영수증", "매장비품", "가격표"]},
+  {l3:"L3-070504",name:"매장 POP·디스플레이",cluster:"marketing",kw:["매장", "POP", "디스플레이", "진열", "사인물", "매장사인", "아크릴", "스탠드", "배너", "매장꾸미기", "진열대"]},
+  {l3:"L3-070505",name:"판촉·홍보 인쇄물",cluster:"marketing",kw:["인쇄물", "홍보", "판촉", "판촉인쇄", "전단지", "카탈로그", "현수막", "DM", "홍보물", "포스터", "안내문", "스티커", "대량인쇄"]},
+  {l3:"L3-070601",name:"홍보대행·미디어 관리",cluster:"marketing",kw:["관리", "홍보", "PR", "언론", "미디어", "보도자료", "기자회견", "위기관리", "홍보대행", "미디어관계", "뉴스"]},
+  {l3:"L3-070701",name:"시장조사",cluster:"marketing",kw:["시장조사", "리서치", "설문", "패널", "인지도", "소비자조사", "FGI", "정량", "정성", "브랜드추적", "만족도"]},
+  {l3:"L3-070702",name:"CRM·CX플랫폼",cluster:"marketing",kw:["CX플랫폼", "CRM", "CX", "마케팅자동화", "세일즈포스", "브레이즈", "HubSpot", "CDP", "고객관리", "캠페인", "퍼널"]},
+  // ── IT/ICT ──
+  {l3:"L3-080101",name:"랙/블레이드 서버",cluster:"capex",kw:["서버", "랙서버", "블레이드", "타워서버", "CPU", "메모리", "HPC", "서버구매", "서버유지보수", "서버확장", "스토리지", "네트워크장비", "스위치", "NAS", "방화벽", "라우터"]},
+  {l3:"L3-080102",name:"NAS/SAN/HCI 스토리지",cluster:"capex",kw:["스토리지", "NAS", "SAN", "HCI", "디스크", "백업", "아카이빙", "오브젝트스토리지", "데이터저장", "RAID"]},
+  {l3:"L3-080201",name:"노트북·데스크탑·워크스테이션",cluster:"capex",kw:["노트북", "데스크탑", "워크스테이션", "PC", "랩탑", "업무용PC", "개발용PC", "울트라북", "태블릿", "맥북", "컴퓨터", "아이맥"]},
+  {l3:"L3-080202",name:"모니터·주변기기",cluster:"capex",kw:["모니터", "마우스", "키보드", "웹캠", "헤드셋", "도킹", "USB허브", "충전기", "케이블", "주변기기", "도킹스테이션"]},
+  {l3:"L3-080301",name:"스위치·라우터·무선AP",cluster:"capex",kw:["스위치", "라우터", "AP", "무선AP", "방화벽", "네트워크", "WiFi", "L2", "L3", "PoE", "네트워크장비"]},
+  {l3:"L3-080302",name:"인터넷·전용회선·이동통신",cluster:"maintenance",kw:["전용회선", "인터넷", "전용선", "MPLS", "이동통신", "법인폰", "VPN", "회선", "인터넷전화", "SIP", "통신비", "통신"]},
+  {l3:"L3-080401",name:"시스템 / 플랫폼 SW",cluster:"software",kw:["SW", "플랫폼", "시스템", "시스템SW", "OS", "Windows", "Linux", "VMware", "가상화", "미들웨어", "웹서버", "WAS", "DB라이선스", "SaaS", "Microsoft", "Slack", "Adobe", "구독", "라이선스", "Notion", "Zoom", "Teams"]},
+  {l3:"L3-080402",name:"비즈니스 애플리케이션",cluster:"software",kw:["애플리케이션", "비즈니스", "ERP", "그룹웨어", "SAP", "더존", "카카오워크", "MS365", "인사시스템", "재무시스템", "전자결재", "메신저", "소프트웨어", "SW", "솔루션", "보안솔루션", "백신", "한글", "오피스"]},
+  {l3:"L3-080403",name:"개발 / DevOps 도구",cluster:"software",kw:["도구", "개발", "개발도구", "IDE", "CI/CD", "Git", "Jenkins", "Docker", "Kubernetes", "DevOps", "형상관리", "테스트", "Jira"]},
+  {l3:"L3-080404",name:"데이터 / AI 플랫폼",cluster:"subscription",kw:["플랫폼", "데이터", "AI", "ML", "BI", "빅데이터", "데이터웨어하우스", "분석", "머신러닝", "딥러닝", "Tableau", "Power BI"]},
+  {l3:"L3-080405",name:"AI 구독",cluster:"subscription",kw:["구독", "AI", "AI구독", "ChatGPT", "Claude", "Gemini", "생성형AI", "GenAI", "GPT", "API", "LLM", "AI어시스턴트", "코파일럿", "Copilot", "AI도구"]},
+  {l3:"L3-080501",name:"퍼블릭 클라우드(IaaS/PaaS/SaaS)",cluster:"cloud",kw:["클라우드", "AWS", "Azure", "GCP", "네이버클라우드", "IaaS", "PaaS", "SaaS", "퍼블릭", "멀티클라우드", "FinOps", "클라우드서비스"]},
+  {l3:"L3-080502",name:"클라우드 관리 / MSP",cluster:"cloud",kw:["관리", "클라우드", "MSP", "클라우드관리", "FinOps", "마이그레이션", "클라우드운영", "비용최적화", "모니터링", "클라우드전환"]},
+  {l3:"L3-080503",name:"정보보안 솔루션",cluster:"capex",kw:["솔루션", "보안", "백신", "방화벽", "IPS", "DLP", "SIEM", "취약점", "정보보안", "랜섬웨어", "EDR", "ISMS", "보안관제"]},
+  {l3:"L3-080601",name:"SI·맞춤형 SW개발",cluster:"capex",kw:["SW개발", "맞춤형", "SI", "시스템개발", "웹개발", "앱개발", "소프트웨어", "커스터마이징", "RFP", "프로젝트", "개발외주", "ERP", "SAP", "시스템전환", "개발", "플랫폼개발"]},
+  {l3:"L3-080602",name:"IT 운영·유지보수(ITO)",cluster:"maintenance",kw:["운영", "IT", "ITO", "유지보수", "SM", "헬프데스크", "IT운영", "장애대응", "SLA", "모니터링", "운영아웃소싱"]},
+  {l3:"L3-080701",name:"전력 / 냉각 설비",cluster:"it_infra",kw:["설비", "전력", "UPS", "PDU", "냉각", "CRAC", "발전기", "전력설비", "데이터센터", "PUE", "무정전", "항온항습"]},
+  {l3:"L3-080702",name:"랙 / 케이블링",cluster:"it_infra",kw:["랙", "서버랙", "케이블링", "광케이블", "패치패널", "랙설치", "UTP", "광선로", "배선", "IDC인프라"]},
+  {l3:"L3-080703",name:"IDC / 코로케이션서비스",cluster:"it_infra",kw:["코로케이션서비스", "IDC", "코로케이션", "하우징", "호스팅", "상면", "DR", "재해복구", "데이터센터임대", "SLA"]},
+  // ── 물류 ──
+  {l3:"L3-090101",name:"일반화물 용차",cluster:"logistics",kw:["용차", "화물", "트럭", "일반화물", "5톤", "11톤", "25톤", "운송", "차량수배", "배차", "운반"]},
+  {l3:"L3-090102",name:"용·도급 운송 계약",cluster:"logistics",kw:["계약", "운송", "도급", "도급운송", "용도급", "전속", "정기운송", "장기계약", "운송계약", "전담차량", "계약운송"]},
+  {l3:"L3-090103",name:"셔틀/구간 운송",cluster:"logistics",kw:["운송", "구간", "셔틀", "구간운송", "정기운송", "거점운송", "루트배송", "라운드운송", "왕복", "정시배차"]},
+  {l3:"L3-090104",name:"혼적(LTL) 운송",cluster:"logistics",kw:["운송", "LTL", "혼적", "합적", "소량화물", "공동배차", "권역", "일부적재", "합적운송"]},
+  {l3:"L3-090201",name:"FCL 운송",cluster:"logistics",kw:["운송", "FCL", "컨테이너", "해상운송", "선사", "BCO", "정기선", "20ft", "40ft", "해운", "선적"]},
+  {l3:"L3-090202",name:"LCL 혼재 운송",cluster:"logistics",kw:["운송", "LCL", "혼재", "소량해운", "CFS", "혼재운송", "해상소화물", "컨솔", "그루피지"]},
+  {l3:"L3-090203",name:"해운 포워더 포워딩",cluster:"logistics",kw:["해운", "포워딩", "포워더", "B/L", "선적서류", "해운대행", "부킹", "프레이트포워딩", "통관연계"]},
+  {l3:"L3-090301",name:"국제 항공",cluster:"logistics",kw:["항공", "국제", "항공화물", "에어카고", "항공운송", "긴급항공", "국제항공", "에어프레이트", "AWB"]},
+  {l3:"L3-090302",name:"항공 포워더 포워딩",cluster:"logistics",kw:["포워딩", "포워더", "항공", "항공포워딩", "항공포워더", "AWB", "핸들링", "공항", "항공대행", "콘솔", "항공혼재"]},
+  {l3:"L3-090303",name:"국제 특송 서비스",cluster:"logistics",kw:["서비스", "국제", "특송", "DHL", "FedEx", "UPS", "EMS", "국제택배", "익스프레스", "긴급배송", "도어투도어"]},
+  {l3:"L3-090401",name:"일반창고",cluster:"logistics",kw:["일반창고", "보관", "3PL", "창고임대", "상온보관", "물류창고", "입출고", "재고보관"]},
+  {l3:"L3-090402",name:"온도관리 창고",cluster:"logistics",kw:["창고", "냉장창고", "냉동창고", "콜드체인", "온도관리", "저온보관", "HACCP", "냉장보관"]},
+  {l3:"L3-090403",name:"야외/야적",cluster:"logistics",kw:["야외", "야적", "야외보관", "적치장", "옥외", "중장비보관", "자재보관", "노천", "임시야적"]},
+  {l3:"L3-090404",name:"위험물 창고",cluster:"logistics",kw:["창고", "위험물", "위험물창고", "인화성", "독성", "부식성", "법정허가", "위험물보관", "소방"]},
+  {l3:"L3-090501",name:"국내 풀필먼트 (피킹/패킹 포함)",cluster:"logistics",kw:["포함", "국내", "풀필먼트", "피킹", "패킹", "출고", "주문처리", "3PL풀필먼트", "이커머스", "물류대행"]},
+  {l3:"L3-090502",name:"크로스 보더 풀필먼트",cluster:"logistics",kw:["풀필먼트", "보더", "크로스", "크로스보더", "해외풀필먼트", "해외배송", "역직구", "해외물류", "글로벌풀필먼트"]},
+  {l3:"L3-090503",name:"반품 역물류",cluster:"logistics",kw:["반품", "역물류", "반품처리", "리퍼", "재판매", "회수", "교환", "반품물류", "리버스"]},
+  {l3:"L3-090504",name:"라스트 마일",cluster:"logistics",kw:["마일", "라스트", "라스트마일", "당일배송", "새벽배송", "퀵커머스", "즉시배송", "배송대행", "배달"]},
+  {l3:"L3-090601",name:"WMS/TMS",cluster:"logistics",kw:["WMS", "TMS", "창고관리", "운송관리", "물류시스템", "재고관리", "배차시스템", "물류IT"]},
+  {l3:"L3-090602",name:"자동화 설비",cluster:"logistics",kw:["설비", "자동화", "컨베이어", "소터", "AGV", "AMR", "로봇", "물류로봇", "자동분류", "물류자동화"]},
+  {l3:"L3-090603",name:"지게차, PDA, RFID 리더기등",cluster:"logistics",kw:["리더기등", "PDA,", "지게차,", "지게차", "PDA", "RFID", "핸디터미널", "스캐너", "바코드리더", "전동지게차", "물류장비"]},
+  {l3:"L3-090604",name:"IoT, 트랙킹",cluster:"logistics",kw:["트랙킹", "IoT,", "IoT", "트래킹", "GPS", "위치추적", "온도모니터링", "센서", "실시간추적", "가시성"]},
+  {l3:"L3-090701",name:"통관·관세 서비스",cluster:"logistics",kw:["서비스", "통관", "관세", "FTA", "원산지", "수출입", "관세사", "수입신고", "HS코드", "관세환급"]},
+  {l3:"L3-090702",name:"물류 보험 서비스",cluster:"logistics",kw:["서비스", "보험", "물류", "물류보험", "적하보험", "화물보험", "클레임", "보험부보", "손해배상", "운송보험"]},
+  {l3:"L3-090703",name:"물류 컨설팅",cluster:"logistics",kw:["컨설팅", "물류", "물류컨설팅", "SCM", "네트워크설계", "물류최적화", "물류비절감", "거점전략"]},
+  {l3:"L3-090704",name:"물류 인력 파견 서비스",cluster:"logistics",kw:["서비스", "인력", "물류", "물류인력", "파견", "하역", "포장인력", "검수", "성수기", "인력파견", "물류파견", "작업자"]},
+  // ── 생산관리 ──
+  {l3:"L3-100101",name:"생산장비 구매·수리",cluster:"capex",kw:["수리", "구매", "생산장비", "CNC", "프레스", "사출기", "설비구매", "설비수리", "오버홀", "기계장비", "라인설비", "설비", "금형", "제조설비", "산업기계"]},
+  {l3:"L3-100102",name:"금형·지그·공구류",cluster:"capex",kw:["공구류", "금형", "지그", "치공구", "절삭공구", "사출금형", "프레스금형", "공구", "다이", "몰드", "시사출"]},
+  {l3:"L3-100201",name:"공장용 소모품",cluster:"capex",kw:["소모품", "공장용", "MRO", "공장소모품", "연마재", "윤활유", "세정제", "테이프", "장갑", "와이퍼", "볼트너트", "소모자재"]},
+  {l3:"L3-100301",name:"공장 시설 공사",cluster:"capex",kw:["공사", "시설", "공장", "공장공사", "유틸리티", "전기공사", "배관공사", "공조공사", "증축", "설비설치", "플랜트"]},
+  {l3:"L3-100302",name:"설비 유지보수 서비스",cluster:"capex",kw:["서비스", "유지보수", "설비", "설비유지보수", "PM", "예방보전", "긴급수리", "설비점검", "교정", "부품교체", "CBM", "TPM"]},
+  {l3:"L3-100303",name:"특수설비 서비스",cluster:"capex",kw:["서비스", "특수설비", "클린룸", "크레인", "보일러", "특수배관", "고압설비", "법정검사", "특수시공"]},
+  {l3:"L3-100401",name:"생산 인력 서비스",cluster:"capex",kw:["서비스", "인력", "생산", "생산인력", "인력파견", "조립인력", "포장", "검사", "생산직", "교대근무", "계절인력"]},
+  {l3:"L3-100402",name:"스마트팩토리, IT 서비스",cluster:"capex",kw:["서비스", "IT", "스마트팩토리,", "스마트팩토리", "MES", "SCADA", "생산IT", "IoT", "데이터수집", "자동화", "산업용PC", "POP"]},
+  {l3:"L3-100501",name:"산업안전·유해물질·소방·환경관리",cluster:"capex",kw:["산업안전", "EHS", "유해물질", "소방", "환경관리", "수질", "대기", "MSDS", "안전보건", "안전교육"]},
+  {l3:"L3-100601",name:"불용자산 매각·폐기물 처리",cluster:"service",kw:["불용자산", "매각", "폐기물", "처리", "설비매각", "중고설비", "폐기물위탁", "환경처리"]},
+  // ── 연구개발 ──
+  {l3:"L3-110101",name:"HW/기구 개발 용역",cluster:"rnd",kw:["용역", "개발", "기구", "HW", "HW개발", "회로설계", "기구설계", "PCB", "FPGA", "시제품", "외주개발", "프로토타입"]},
+  {l3:"L3-110102",name:"소프트웨어 개발 용역",cluster:"rnd",kw:["용역", "개발", "소프트웨어", "SW개발", "펌웨어", "임베디드", "앱개발", "웹개발", "외주", "프리랜서", "소스코드", "아키텍처"]},
+  {l3:"L3-110103",name:"디자인·패키지 개발 용역",cluster:"rnd",kw:["용역", "개발", "디자인", "산업디자인", "UI", "UX", "패키지", "제품디자인", "CMF", "렌더링", "목업"]},
+  {l3:"L3-110104",name:"제품 시험·평가 용역",cluster:"rnd",kw:["용역", "제품", "시험", "평가", "테스트", "검증", "필드테스트", "성능시험", "기능시험", "QA", "시험성적서"]},
+  {l3:"L3-110201",name:"개발용 회로·전자 부품",cluster:"rnd",kw:["부품", "전자", "회로", "개발용", "전자부품", "IC", "저항", "커패시터", "커넥터", "PCB", "반도체", "디지키", "마우저", "소량구매"]},
+  {l3:"L3-110202",name:"개발용 기구·구조 부품",cluster:"rnd",kw:["부품", "구조", "개발용", "기구부품", "3D프린팅", "CNC", "판금", "시제품", "가공", "기구", "구조부품", "목업"]},
+  {l3:"L3-110203",name:"소재·화학 물질",cluster:"rnd",kw:["물질", "화학", "소재", "시약", "화학물질", "원자재", "연구소재", "특수소재", "시그마알드리치", "대정화금"]},
+  {l3:"L3-110301",name:"전자·회로 계측기",cluster:"capex",kw:["회로", "전자", "계측기", "오실로스코프", "스펙트럼", "멀티미터", "로직분석기", "파워서플라이", "전자계측"]},
+  {l3:"L3-110302",name:"환경·신뢰성 시험장비",cluster:"capex",kw:["시험장비", "환경", "환경시험", "신뢰성", "항온항습", "열충격", "진동시험", "염수분무", "가속수명", "환경챔버"]},
+  {l3:"L3-110303",name:"광학·이미징 분석장비",cluster:"capex",kw:["광학", "현미경", "분광기", "열화상", "X-ray", "SEM", "CT", "이미징", "분석장비", "측정"]},
+  {l3:"L3-110304",name:"연구개발 전용 설비·장비",cluster:"capex",kw:["장비", "설비", "전용", "연구개발", "연구설비", "클린룸", "파일럿", "R&D장비", "연구장비", "실험설비", "시험라인", "벤치"]},
+  {l3:"L3-110401",name:"설계·시뮬레이션 소프트웨어",cluster:"capex",kw:["소프트웨어", "설계", "설계SW", "ANSYS", "AutoCAD", "MATLAB", "SolidWorks", "CAD", "CAE", "시뮬레이션", "라이선스"]},
+  {l3:"L3-110402",name:"특허·문헌정보 DB",cluster:"capex",kw:["DB", "문헌정보", "특허", "특허DB", "논문DB", "키프리스", "WIPS", "IEEE", "학술지", "기술문헌", "특허검색", "선행기술"]},
+  {l3:"L3-110501",name:"국내 안전·전기·전자파 인증",cluster:"rnd",kw:["전기", "안전", "국내", "KC", "KS", "전기안전", "EMC", "전자파", "인증", "안전인증", "적합성", "시험인증", "KTL"]},
+  {l3:"L3-110502",name:"해외 안전·환경·품질·유해물질 인증",cluster:"rnd",kw:["인증", "유해물질", "품질", "환경", "안전", "해외", "CE", "FCC", "UL", "CCC", "RoHS", "REACH", "해외인증", "수출인증", "글로벌인증", "규격적합"]},
+  {l3:"L3-110503",name:"성능·신뢰성 시험 서비스",cluster:"rnd",kw:["서비스", "시험", "신뢰성", "성능", "성능시험", "신뢰성시험", "내구성", "수명시험", "제3자시험", "분석", "시험서비스", "성적서"]},
+  {l3:"L3-110601",name:"특허 출원·관리",cluster:"rnd",kw:["관리", "출원", "특허", "특허출원", "특허등록", "특허관리", "특허법인", "변리사", "IP", "지식재산", "포트폴리오", "PCT", "해외출원"]},
+  {l3:"L3-110602",name:"특허 소송·분쟁 대응",cluster:"rnd",kw:["대응", "소송", "특허", "특허소송", "분쟁", "무효심판", "침해", "FTO", "특허전쟁", "소송대리", "IP소송", "지재소송"]},
+  {l3:"L3-110603",name:"브랜드·기술 로열티",cluster:"rnd",kw:["기술", "로열티", "라이선스", "브랜드", "기술이전", "특허풀", "royalty", "MRG", "라이선서", "기술료"]},
+  // ── 특수 ──
+  {l3:"L3-DRIVER",name:"대리기사 서비스",cluster:"contact",kw:["대리기사", "대리운전"]},
+];
+
+function matchCategory(text){
+  var t=text.toLowerCase();
+  // Step 1: DIRECT_L3_MAP (오분류 방지 — 긴 키 우선)
+  var dKeys=Object.keys(DIRECT_L3_MAP).sort(function(a,b){return b.length-a.length;});
+  for(var di=0;di<dKeys.length;di++){
+    if(t.indexOf(dKeys[di])>=0){
+      for(var ci=0;ci<CATEGORIES.length;ci++){
+        if(CATEGORIES[ci].l3===DIRECT_L3_MAP[dKeys[di]])return CATEGORIES[ci];
+      }
+    }
+  }
+  // Step 2: SYNONYM_REPLACE (줄임말 치환)
+  var sKeys=Object.keys(SYNONYM_REPLACE).sort(function(a,b){return b.length-a.length;});
+  for(var si=0;si<sKeys.length;si++){
+    if(t.indexOf(sKeys[si])>=0) t=t.split(sKeys[si]).join(SYNONYM_REPLACE[sKeys[si]].toLowerCase());
+  }
+  // Step 3: 키워드 매칭
+  var MIN_SCORE=2;
+  var best=null;var bs=0;
+  for(var i=0;i<CATEGORIES.length;i++){var sc=0;for(var j=0;j<CATEGORIES[i].kw.length;j++){if(t.indexOf(CATEGORIES[i].kw[j].toLowerCase())>=0)sc+=CATEGORIES[i].kw[j].length;}if(sc>bs){bs=sc;best=CATEGORIES[i];}}
+  if(bs<MIN_SCORE)return null;
+  return best;
+}
+var SYNONYM_REPLACE={
+  "엘베":"승강기","에어콘":"에어컨","냉방":"냉난방","난방":"냉난방","냉난방기":"냉난방",
+  "보일러수리":"보일러","전구":"조명","형광등":"조명","LED조명":"조명","조명교체":"조명",
+  "변기":"배관","화장실수리":"배관","수도꼭지":"배관",
+  "소화기":"소방점검","비상등":"소방점검","화재경보":"소방점검",
+  "토나":"토너","카트리지":"토너","잉크젯":"잉크",
+  "프린트":"프린터","인쇄기":"프린터","칼라복사":"복합기","컬러인쇄":"복합기",
+  "냉정기":"정수기","냉온수기":"정수기",
+  "랜선":"네트워크","LAN":"네트워크","와이파이":"WiFi","wifi":"WiFi",
+  "전화기":"인터넷전화","내선전화":"인터넷전화","유선전화":"인터넷전화","IP폰":"인터넷전화",
+  "안티바이러스":"백신","바이러스차단":"백신",
+  "아마존":"AWS","아마존웹서비스":"AWS","애저":"Azure","마이크로소프트클라우드":"Azure","구글클라우드":"GCP",
+  "챗GPT":"ChatGPT","챗지피티":"ChatGPT","클로드":"Claude","제미나이":"Gemini",
+  "사스":"SaaS","파스":"PaaS",
+  "워크샵":"워크숍","워크삽":"워크숍","야유회":"사내행사","단합대회":"사내행사","회식장소":"행사대행",
+  "퀵":"퀵서비스","오토바이배달":"퀵서비스","바이크":"퀵서비스",
+  "콜택시":"택시","법인택시":"택시",
+  "다림질":"세탁","드라이클리닝":"세탁",
+  "렌트카":"렌터카","렌트":"렌탈",
+  "주차":"시설관리","주차관리":"시설관리","주차정산":"시설관리",
+  "야간경비":"보안경비","보안요원":"보안경비","청소아줌마":"청소","환경미화원":"청소",
+};
+var DIRECT_L3_MAP={
+  "ms오피스":"L3-080401","엠에스오피스":"L3-080401","오피스365":"L3-080401",
+  "m365":"L3-080401","microsoft365":"L3-080401","마이크로소프트365":"L3-080401",
+  "한컴오피스":"L3-080401","한글오피스":"L3-080401","ms365":"L3-080401","office365":"L3-080401",
+  "ppt":"L3-080401","파워포인트":"L3-080401","엑셀":"L3-080401","excel":"L3-080401","워드":"L3-080401","word":"L3-080401",
+  "노트북수리":"L3-080602","pc수리":"L3-080602","컴퓨터수리":"L3-080602","모니터수리":"L3-080602","키보드고장":"L3-080602",
+  "에어컨 고장":"L3-030104","에어컨고장":"L3-030104","에어컨수리":"L3-030104","에어컨 수리":"L3-030104",
+  "에어컨 안 나와":"L3-030104","에어컨 안나와":"L3-030104","에어컨 안돼":"L3-030104",
+  "에어컨렌탈":"L3-010401","에어컨설치":"L3-010401","에어컨 렌탈":"L3-010401","에어컨 설치":"L3-010401","에어컨":"L3-010401",
+  "선풍기":"L3-010401","온풍기":"L3-010401","히터":"L3-010401",
+  "형광등":"L3-030104","형광등교체":"L3-030104","형광등 교체":"L3-030104","전구교체":"L3-030104","전구":"L3-030104","led교체":"L3-030104","led등":"L3-030104",
+  "프린터수리":"L3-080602","프린터고장":"L3-080602","토너구매":"L3-030301","토너주문":"L3-030301",
+  "이삿짐":"L3-030106","사무실이전":"L3-030106","오피스이전":"L3-030106",
+  "ssl":"L3-080503","ssl인증서":"L3-080503",
+  "엘베점검":"L3-030205","엘베 점검":"L3-030205","승강기점검":"L3-030205","승강기 점검":"L3-030205",
+  "데이터센터":"L3-080703","idc":"L3-080703",
+};
+
+
+// ── Phase 2: Condition Signal Build (§2.2 — Signal-driven) ──
+// SW12: Contract DB — 현재 하드코딩, 향후 API/Seed Template 연동 전환 필요
+// Seed Template 3_계약목록 + 기존 데이터 통합 (17건)
+var CONTRACT_DB={
+  // Seed Template 3_계약목록 기반
+  "L3-010101":{exists:true,vendor:"오피스디포코리아",contract:"CON-2024-001",manager:"구매팀 조성호 (내선 4202)",expiry:"2025-12-31"},
+  "L3-030302":{exists:true,vendor:"코웨이",contract:"CON-2024-012",manager:"총무팀 김대리 (내선 4105)",expiry:"2025-09-30"},
+  "L3-030301":{exists:true,vendor:"신도리코",contract:"CON-2024-015",manager:"총무팀 이사원 (내선 4108)",expiry:"2026-06-30"},
+  "L3-030202":{exists:true,vendor:"에스원",contract:"CON-2024-003",manager:"시설팀 박팀장 (내선 4301)",expiry:"2025-12-31"},
+  "L3-040101":{exists:true,vendor:"롯데렌탈",contract:"CON-2024-022",manager:"총무팀 박대리 (내선 4110)",expiry:"2026-03-31"},
+  "L3-010401":{exists:true,vendor:"네스프레소",contract:"CON-2024-030",manager:"총무팀 김대리 (내선 4105)",expiry:"2026-01-31"},
+  "L3-080401":{exists:true,vendor:"Microsoft",contract:"SUB-2024-008",manager:"IT팀 박과장 (내선 3301)",expiry:"2025-12-31"},
+  "L3-080501":{exists:true,vendor:"AWS",contract:"SUB-2024-011",manager:"IT팀 박과장 (내선 3301)",expiry:"2026-06-30"},
+  "L3-080405":{exists:true,vendor:"OpenAI",contract:"SUB-2024-020",manager:"IT팀 박과장 (내선 3301)",expiry:"2026-03-31"},
+  "L3-030201":{exists:true,vendor:"ISS코리아",contract:"CON-2024-005",manager:"시설팀 최과장 (내선 4301)",expiry:"2025-04-30"},
+  "L3-030203":{exists:true,vendor:"세스코",contract:"CON-2024-007",manager:"시설팀 최과장 (내선 4301)",expiry:"2026-02-28"},
+  "L3-020102":{exists:true,vendor:"서울대병원",contract:"CON-2024-009",manager:"인사팀 한대리 (내선 2205)",expiry:"2025-12-31"},
+  "L3-020201":{exists:true,vendor:"한국기업교육",contract:"CON-2024-010",manager:"인사팀 한대리 (내선 2205)",expiry:"2026-06-30"},
+  "L3-050101":{exists:true,vendor:"삼성생명",contract:"CON-2024-014",manager:"인사팀 한대리 (내선 2205)",expiry:"2026-01-31"},
+  "L3-080302":{exists:true,vendor:"KT",contract:"CON-2024-016",manager:"IT팀 박과장 (내선 3301)",expiry:"2026-12-31"},
+  "L3-080201":{exists:true,vendor:"Dell코리아",contract:"CON-2024-004",manager:"IT팀 박과장 (내선 3301)",expiry:"2025-12-31"},
+  "L3-DRIVER":{exists:true,vendor:"카카오T 비즈니스",contract:"CON-2024-025",manager:"총무팀 김대리 (내선 4105)",phone:"1599-9500"},
+};
+
+function extractAmount(text){
+  // 금액 추출: "5천만원", "2억", "500만원", "8,000,000원" 등
+  var t=text.replace(/,/g,"");
+  var m;
+  m=t.match(/(\d+(?:\.\d+)?)\s*억/);if(m)return parseFloat(m[1])*100000000;
+  m=t.match(/(\d+(?:\.\d+)?)\s*천만/);if(m)return parseFloat(m[1])*10000000;
+  m=t.match(/(\d+(?:\.\d+)?)\s*백만/);if(m)return parseFloat(m[1])*1000000;
+  m=t.match(/(\d+(?:\.\d+)?)\s*만/);if(m)return parseFloat(m[1])*10000;
+  m=t.match(/(\d{6,})\s*원/);if(m)return parseInt(m[1]);
+  return null;
+}
+
+// 긴급 키워드 감지
+var URGENCY_KW=["긴급","급해","당장","즉시","ASAP","asap","화재","사고","고장","오늘","지금","즉각","시급","위급","비상"];
+// 재주문 키워드
+var REORDER_KW=["재주문","또","다시","지난번","똑같이","추가주문","같은거","저번에"];
+// 갱신 키워드
+var RENEWAL_KW=["갱신","연장","만료","재계약","계약갱신","계약연장"];
+// 단일 공급사 키워드
+var SOLE_SOURCE_KW=["독점","단일공급","유일","대체불가","특허","OEM","전용부품","제조사지정"];
+// 자산/CAPEX 키워드
+var CAPEX_KW=["자산","설비투자","CAPEX","capex","시설투자","고정자산"];
+// 특별승인 키워드
+var SPECIAL_APPROVAL_KW=["상품권","기프트카드","기프티콘","쿠폰","특별승인"];
+
+function buildCondition(text,cat){
+  var t=text.toLowerCase();
+  var con={
+    contract:null,       // Contract Flag (§5.1 가중치 0.15)
+    urgency:false,       // Urgency Level (§5.1 가중치 0.10)
+    amount:null,         // Amount Bucket (§5.1 가중치 0.20)
+    amountBucket:null,   // "micro"|"small"|"medium"|"large"|"strategic"
+    reorder:false,       // Reorder pattern
+    renewal:false,       // Renewal signal
+    soleSource:false,    // Sole supplier
+    capex:false,         // CAPEX/Asset
+    specialApproval:false,// Special approval
+    supplierMentioned:false,// Supplier Preference (§5.1 가중치 0.10)
+  };
+
+  // 계약 조회
+  if(cat&&CONTRACT_DB[cat.l3])con.contract=CONTRACT_DB[cat.l3];
+
+  // 긴급성
+  for(let i=0;i<URGENCY_KW.length;i++){if(t.indexOf(URGENCY_KW[i])>=0){con.urgency=true;break;}}
+
+  // 재주문/갱신
+  for(let i=0;i<REORDER_KW.length;i++){if(t.indexOf(REORDER_KW[i])>=0){con.reorder=true;break;}}
+  for(let i=0;i<RENEWAL_KW.length;i++){if(t.indexOf(RENEWAL_KW[i])>=0){con.renewal=true;break;}}
+
+  // 단일 공급사
+  for(let i=0;i<SOLE_SOURCE_KW.length;i++){if(t.indexOf(SOLE_SOURCE_KW[i])>=0){con.soleSource=true;break;}}
+
+  // CAPEX
+  for(let i=0;i<CAPEX_KW.length;i++){if(t.indexOf(CAPEX_KW[i])>=0){con.capex=true;break;}}
+  if(cat&&cat.cluster==="capex")con.capex=true;
+
+  // 특별 승인
+  for(let i=0;i<SPECIAL_APPROVAL_KW.length;i++){if(t.indexOf(SPECIAL_APPROVAL_KW[i])>=0){con.specialApproval=true;break;}}
+
+  // 금액
+  con.amount=extractAmount(text);
+  if(con.amount!==null){
+    if(con.amount<=1000000)con.amountBucket="micro";
+    else if(con.amount<=50000000)con.amountBucket="small";
+    else if(con.amount<=200000000)con.amountBucket="medium";
+    else con.amountBucket="strategic";
+  }
+
+  // 고액 키워드 (금액 미명시)
+  if(con.amount===null&&(t.indexOf("억")>=0||t.indexOf("대형")>=0||t.indexOf("전사")>=0)){
+    con.amountBucket="strategic";
+  }
+
+  // 공급사 언급 여부
+  if(con.contract)con.supplierMentioned=true;
+  var supplierKW=["삼성","LG","코웨이","세스코","신도리코","네스프레소","ISS","KT","AWS","Microsoft","OpenAI","롯데"];
+  for(let i=0;i<supplierKW.length;i++){if(t.indexOf(supplierKW[i].toLowerCase())>=0){con.supplierMentioned=true;break;}}
+
+  return con;
+}
+
+
+// ── Phase 3: Intent Stabilization (§2.2.2 — 결과 신호) ──
+// Intent는 Category + Condition에서 도출되는 결과 신호
+function stabilizeIntent(cat,con){
+  if(con.urgency)return "EMERGENCY";
+  if(con.renewal)return "RENEWAL";
+  if(con.reorder)return "REORDER";
+  if(con.capex)return "ASSET_ACQUISITION";
+  if(con.soleSource)return "SOLE_SOURCE";
+  if(con.specialApproval)return "SPECIAL";
+  if(cat&&cat.cluster==="contact")return "CONTACT";
+  if(con.contract)return "CONTRACT_BASED";
+  return "NEW_PURCHASE";
+}
+
+
+// ── Phase 4: GuideType Resolution — Decision Tree (§4.1~4.5) ──
+function resolveGT(cat,con,intent){
+  if(!cat)return{gtCode:null,candidates:[],reason:"품목 미식별"};
+
+  // ── 연락처 전용 ──
+  if(cat.cluster==="contact")return{gtCode:"CONTACT",candidates:["CONTACT"],reason:"연락처 안내 품목"};
+
+  // ── §4.1 Special GT 우선 판단 (최우선) ──
+  if(con.urgency||intent==="EMERGENCY")
+    return{gtCode:"G31",candidates:["G31"],reason:"긴급 구매 → 즉시 처리"};
+
+  if(con.soleSource)
+    return{gtCode:"G32",candidates:["G32"],reason:"단일 공급사 → 특별 승인"};
+
+  if(con.amountBucket==="strategic"&&!con.capex)
+    return{gtCode:"G34",candidates:["G34"],reason:"고액 (2억+) → 전략 구매"};
+
+  if(con.specialApproval)
+    return{gtCode:"G35",candidates:["G35"],reason:"특별 승인 필요 품목"};
+
+  if(con.capex&&(con.amountBucket==="medium"||con.amountBucket==="strategic"))
+    return{gtCode:"G33",candidates:["G33"],reason:"자산/설비 취득 구매"};
+
+  // ── §4.2 계약 기반 판단 ──
+  if(cat.cluster==="rental"){
+    if(con.contract)return{gtCode:"G19",candidates:["G19"],reason:"기존 렌탈/리스 계약 → 신청"};
+    return{gtCode:"G11",candidates:["G11","G21"],reason:"렌탈 계약 없음 → 업체 비교 필요"};
+  }
+
+  if(cat.cluster==="subscription"){
+    if(con.contract)return{gtCode:"G20",candidates:["G20"],reason:"기존 구독 계약 → 변경/갱신"};
+    return{gtCode:"G27",candidates:["G27","G06"],reason:"구독 없음 → SaaS 신규 신청"};
+  }
+
+  if(cat.cluster==="cloud"){
+    if(con.contract)return{gtCode:"G28",candidates:["G28"],reason:"클라우드 서비스 → 기존 계약 변경"};
+    return{gtCode:"G28",candidates:["G28","G11"],reason:"클라우드 → 전략적 도입 필요"};
+  }
+
+  if(con.contract&&con.reorder)
+    return{gtCode:"G16",candidates:["G16"],reason:"기존 계약 재주문"};
+
+  if(con.contract&&con.renewal)
+    return{gtCode:"G17",candidates:["G17"],reason:"계약 갱신/연장"};
+
+  if(con.contract&&(cat.cluster==="service"||cat.cluster==="facility"||cat.cluster==="maintenance"||cat.cluster==="professional"))
+    return{gtCode:"G18",candidates:["G18"],reason:"서비스 계약 → 발주/갱신"};
+
+  if(con.contract&&cat.cluster==="catalog")
+    return{gtCode:"G03",candidates:["G03","G04"],reason:"계약 카탈로그 → 발주"};
+
+  if(con.contract)
+    return{gtCode:"G16",candidates:["G16","G17"],reason:"기존 계약 → 발주"};
+
+  // ── §4.3 금액 기반 판단 ──
+  if(con.amountBucket==="micro"&&cat.cluster==="catalog")
+    return{gtCode:"G01",candidates:["G01"],reason:"소액 카탈로그 → 바로 주문"};
+
+  if(con.amountBucket==="micro")
+    return{gtCode:"G10",candidates:["G10"],reason:"소액 구매 → 간소화 처리"};
+
+  if(con.amountBucket==="small"&&!con.contract)
+    return{gtCode:"G06",candidates:["G06","G07","G08"],reason:"일반 구매요청서 작성"};
+
+  if(con.amountBucket==="small"&&con.contract)
+    return{gtCode:"G03",candidates:["G03"],reason:"계약 카탈로그 발주"};
+
+  if(con.amountBucket==="medium"&&!con.contract)
+    return{gtCode:"G11",candidates:["G11","G12","G13"],reason:"고액 → 업체 비교 견적 필요"};
+
+  if(con.amountBucket==="medium"&&con.contract)
+    return{gtCode:"G17",candidates:["G17"],reason:"장기 계약 발주"};
+
+  // ── §4.4 서비스/IT 카테고리 판단 ──
+  if(cat.cluster==="service"&&!con.contract)
+    return{gtCode:"G21",candidates:["G21","G22"],reason:"일반 서비스 구매"};
+
+  if(cat.cluster==="maintenance")
+    return{gtCode:"G22",candidates:["G22","G29"],reason:"유지보수 서비스"};
+
+  if(cat.cluster==="facility"&&!con.contract)
+    return{gtCode:"G23",candidates:["G23"],reason:"시설관리 서비스"};
+
+  if(cat.cluster==="professional")
+    return{gtCode:"G24",candidates:["G24","G25"],reason:"전문 서비스 구매"};
+
+  if(cat.cluster==="project_service")
+    return{gtCode:"G25",candidates:["G25","G13"],reason:"프로젝트 서비스"};
+
+  if(cat.cluster==="software")
+    return{gtCode:"G26",candidates:["G26"],reason:"소프트웨어 구매"};
+
+  // IT 장비
+  if(cat.cluster==="it_equip")
+    return{gtCode:"G06",candidates:["G06","G07"],reason:"IT 장비 → 구매요청서 작성"};
+
+  if(cat.cluster==="it_infra")
+    return{gtCode:"G11",candidates:["G11","G13"],reason:"IT 인프라 → 업체 비교 필요"};
+
+  // 가구
+  if(cat.cluster==="furniture")
+    return{gtCode:"G06",candidates:["G06","G11"],reason:"가구 → 구매요청서"};
+
+  // CAPEX (금액 미명시)
+  if(cat.cluster==="capex"){
+    if(con.amountBucket==="strategic")return{gtCode:"G34",candidates:["G34","G33"],reason:"고액 자산/설비 → 전략 구매"};
+    if(con.amountBucket==="medium")return{gtCode:"G33",candidates:["G33","G11"],reason:"자산/설비 → 투자 심의 필요"};
+    return{gtCode:"G33",candidates:["G33","G34"],reason:"자산/설비 → 자산 구매 절차"};
+  }
+
+  // 카탈로그 (금액 미명시)
+  if(cat.cluster==="catalog")
+    return{gtCode:"G01",candidates:["G01","G02"],reason:"카탈로그 등록 품목"};
+
+  // ── SW11: 신규 cluster GT 매핑 (Wave 2) ──
+
+  // 물류 — 26개 L3
+  if(cat.cluster==="logistics"){
+    if(con.contract)return{gtCode:"G18",candidates:["G18","G17"],reason:"물류 서비스 — 기존 계약 활용"};
+    if(con.amountBucket==="strategic")return{gtCode:"G13",candidates:["G13","G25"],reason:"대형 물류 → 전략 경쟁 입찰"};
+    if(con.amountBucket==="medium")return{gtCode:"G11",candidates:["G11","G21"],reason:"물류 서비스 → 업체 비교 견적"};
+    return{gtCode:"G21",candidates:["G21","G11"],reason:"물류 서비스 구매"};
+  }
+
+  // 연구개발 — 13개 L3
+  if(cat.cluster==="rnd"){
+    if(con.amountBucket==="strategic")return{gtCode:"G25",candidates:["G25","G13"],reason:"대형 R&D → 프로젝트 서비스"};
+    if(con.amountBucket==="medium")return{gtCode:"G24",candidates:["G24","G11"],reason:"R&D 용역/인증 → 전문 서비스"};
+    return{gtCode:"G24",candidates:["G24","G21"],reason:"연구개발 서비스/인증"};
+  }
+
+  // 마케팅 — 21개 L3
+  if(cat.cluster==="marketing"){
+    if(con.contract)return{gtCode:"G18",candidates:["G18","G21"],reason:"마케팅 서비스 — 기존 계약"};
+    if(con.amountBucket==="strategic")return{gtCode:"G13",candidates:["G13","G25"],reason:"대형 마케팅 → 전략 경쟁"};
+    if(con.amountBucket==="medium")return{gtCode:"G11",candidates:["G11","G21"],reason:"마케팅 서비스 → 업체 비교"};
+    if(con.amountBucket==="micro")return{gtCode:"G10",candidates:["G10","G21"],reason:"소액 마케팅 → 간소화 처리"};
+    return{gtCode:"G21",candidates:["G21","G11"],reason:"마케팅 서비스 구매"};
+  }
+
+  // 보험 — 9개 L3
+  if(cat.cluster==="insurance"){
+    if(con.contract)return{gtCode:"G18",candidates:["G18","G17"],reason:"보험 계약 갱신/변경"};
+    if(con.renewal)return{gtCode:"G17",candidates:["G17","G18"],reason:"보험 계약 갱신"};
+    return{gtCode:"G24",candidates:["G24","G11"],reason:"보험 → 전문 서비스 비교"};
+  }
+
+  // ── §4.5 Default Fallback → G06 ──
+  return{gtCode:"G06",candidates:["G06"],reason:"일반 구매요청서 작성"};
+}
+
+
+// ── Phase 5: Confidence Score (§5.1 — Signal Completeness) ──
+// SW17: 금액 미입력 + 금액 의존 GT → Confidence 캡 적용
+var AMOUNT_SENSITIVE_GTS=["G06","G07","G08","G10","G11","G12","G13","G26","G33","G34"];
+function calcConfidence(cat,con,gtResult){
+  var score=0;
+  // 1. Category L3 Code (0.25)
+  if(cat)score+=0.25;
+  // 2. Amount Bucket (0.20)
+  if(con.amountBucket!==null)score+=0.20;
+  else if(cat&&(cat.cluster==="catalog"||cat.cluster==="contact"))score+=0.15; // 소액 추정
+  // 3. Contract Flag (0.15)
+  if(con.contract)score+=0.15;
+  else if(cat)score+=0.10; // 조회 완료, 계약 없음 확인
+  // 4. Urgency Level (0.10)
+  if(con.urgency)score+=0.10;
+  else score+=0.08; // 비긴급 확인
+  // 5. Supplier Preference (0.10)
+  if(con.supplierMentioned)score+=0.10;
+  else score+=0.05; // 미지정 확인
+  // 6. History Match (0.10) — MVP에서 간이 추정
+  if(con.reorder||con.renewal)score+=0.10;
+  else if(con.contract)score+=0.07; // 계약 있으면 이력 존재 추정
+  // 7. GT Candidate Uniqueness (0.10)
+  if(gtResult.candidates.length===1)score+=0.10;
+  else if(gtResult.candidates.length===2)score+=0.05;
+  // else 0
+
+  var raw=Math.min(Math.round(score*100)/100, 1.00);
+
+  // SW17: 금액 미입력 + 금액 의존 GT → 캡 0.55 (clarify 분기로 강제)
+  // 이유: 같은 품목도 금액에 따라 G06(PR)↔G10(소액)↔G11(RFQ)↔G33(CAPEX)이 완전히 달라짐
+  if(con.amountBucket===null&&gtResult.gtCode&&AMOUNT_SENSITIVE_GTS.indexOf(gtResult.gtCode)>=0){
+    raw=Math.min(raw,0.55);
+  }
+
+  return raw;
+}
+
+
+// ── GT → UX Group 매핑 ──
+function gtToUxGroup(gtCode){
+  if(gtCode==="CONTACT")return "contact_only";
+  var gt=GT_REGISTRY[gtCode];
+  if(gt)return gt.uxGroup;
+  return "general_pr";
+}
+
+
+// ── 통합 Navigation Pipeline v2 (Canonical Lookup) ──
+
+var L3_GT_CANON={
+  "L3-010101":{bt:"BT-A",gt:"G01"},"L3-010102":{bt:"BT-C",gt:"G11",dept:"총무팀"},
+  "L3-010103":{bt:"BT-J",gt:"G20"},"L3-010201":{bt:"BT-A",gt:"G01"},
+  "L3-010301":{bt:"BT-B",gt:"G03",dept:"총무팀"},"L3-010302":{bt:"BT-E",gt:"G21"},
+  "L3-010303":{bt:"BT-J",gt:"G27"},"L3-010401":{bt:"BT-B",gt:"G19",dept:"총무팀"},
+  "L3-020101":{bt:"BT-C",gt:"G23",dept:"HR팀"},"L3-020102":{bt:"BT-C",gt:"G11",dept:"HR팀"},
+  "L3-020103":{bt:"BT-C",gt:"G18",dept:"HR팀"},"L3-020104":{bt:"BT-C",gt:"G06",dept:"HR팀"},
+  "L3-020105":{bt:"BT-C",gt:"G05",dept:"HR팀"},"L3-020106":{bt:"BT-C",gt:"G09",dept:"HR팀"},
+  "L3-020107":{bt:"BT-C",gt:"G18",dept:"HR팀"},"L3-020201":{bt:"BT-C",gt:"G18",dept:"HR팀"},
+  "L3-020202":{bt:"BT-C",gt:"G11",dept:"HR팀"},"L3-020203":{bt:"BT-B",gt:"G27",dept:"HR팀"},
+  "L3-020301":{bt:"BT-E",gt:"G24",dept:"HR팀"},"L3-020302":{bt:"BT-H",gt:"G21",dept:"HR팀"},
+  "L3-020401":{bt:"BT-G",gt:"G24",dept:"HR팀"},
+  "L3-030101":{bt:"BT-D",gt:"G33",dept:"시설팀"},"L3-030102":{bt:"BT-D",gt:"G11",dept:"시설팀"},
+  "L3-030103":{bt:"BT-D",gt:"G11",dept:"시설팀"},"L3-030104":{bt:"BT-C",gt:"G22",dept:"시설팀"},
+  "L3-030105":{bt:"BT-D",gt:"G24",dept:"시설팀"},"L3-030106":{bt:"BT-D",gt:"G11",dept:"시설팀"},
+  "L3-030201":{bt:"BT-C",gt:"G23",dept:"시설팀"},"L3-030202":{bt:"BT-C",gt:"G23",dept:"시설팀"},
+  "L3-030203":{bt:"BT-C",gt:"G21",dept:"시설팀"},"L3-030204":{bt:"BT-C",gt:"G21",dept:"시설팀"},
+  "L3-030205":{bt:"BT-C",gt:"G22",dept:"시설팀"},
+  "L3-030301":{bt:"BT-B",gt:"G19",dept:"총무팀"},"L3-030302":{bt:"BT-B",gt:"G19",dept:"총무팀"},
+  "L3-030303":{bt:"BT-B",gt:"G11",dept:"총무팀"},"L3-030401":{bt:"BT-C",gt:"G16",dept:"시설팀"},
+  "L3-040101":{bt:"BT-C",gt:"G33",dept:"총무팀"},"L3-040102":{bt:"BT-C",gt:"G22",dept:"총무팀"},
+  "L3-040201":{bt:"BT-C",gt:"G18",dept:"총무팀"},"L3-040202":{bt:"BT-C",gt:"G06",dept:"총무팀"},
+  "L3-040203":{bt:"BT-G",gt:"G06",dept:"HR팀"},
+  "L3-050101":{bt:"BT-C",gt:"G13",dept:"재무팀"},"L3-050201":{bt:"BT-C",gt:"G13",dept:"재무팀"},
+  "L3-050301":{bt:"BT-C",gt:"G13",dept:"재무팀"},"L3-050401":{bt:"BT-H",gt:"G11",dept:"재무팀"},
+  "L3-050501":{bt:"BT-C",gt:"G16",dept:"재무팀"},"L3-050601":{bt:"BT-E",gt:"G06",dept:"재무팀"},
+  "L3-050701":{bt:"BT-C",gt:"G11",dept:"총무팀"},"L3-050702":{bt:"BT-C",gt:"G18",dept:"재무팀"},
+  "L3-050801":{bt:"BT-H",gt:"G13",dept:"재무팀"},
+  "L3-060101":{bt:"BT-D",gt:"G24",dept:"법무팀"},"L3-060201":{bt:"BT-D",gt:"G25",dept:"경영기획팀"},
+  "L3-060202":{bt:"BT-F",gt:"G25",dept:"IT팀"},"L3-060203":{bt:"BT-G",gt:"G24",dept:"HR팀"},
+  "L3-060301":{bt:"BT-G",gt:"G24",dept:"재무팀"},"L3-060302":{bt:"BT-C",gt:"G18",dept:"HR팀"},
+  "L3-060401":{bt:"BT-H",gt:"G25"},
+  "L3-070101":{bt:"BT-D",gt:"G13",dept:"마케팅팀"},"L3-070201":{bt:"BT-D",gt:"G27",dept:"마케팅팀"},
+  "L3-070202":{bt:"BT-D",gt:"G21",dept:"마케팅팀"},"L3-070203":{bt:"BT-D",gt:"G30",dept:"마케팅팀"},
+  "L3-070204":{bt:"BT-J",gt:"G27",dept:"마케팅팀"},
+  "L3-070301":{bt:"BT-D",gt:"G24",dept:"마케팅팀"},"L3-070302":{bt:"BT-D",gt:"G11",dept:"마케팅팀"},
+  "L3-070303":{bt:"BT-D",gt:"G11",dept:"마케팅팀"},"L3-070304":{bt:"BT-D",gt:"G24",dept:"마케팅팀"},
+  "L3-070401":{bt:"BT-D",gt:"G25",dept:"마케팅팀"},"L3-070402":{bt:"BT-D",gt:"G11",dept:"마케팅팀"},
+  "L3-070403":{bt:"BT-D",gt:"G13",dept:"마케팅팀"},"L3-070404":{bt:"BT-D",gt:"G11",dept:"마케팅팀"},
+  "L3-070501":{bt:"BT-D",gt:"G11",dept:"마케팅팀"},"L3-070502":{bt:"BT-D",gt:"G21",dept:"마케팅팀"},
+  "L3-070503":{bt:"BT-A",gt:"G01",dept:"마케팅팀"},"L3-070504":{bt:"BT-D",gt:"G11",dept:"마케팅팀"},
+  "L3-070505":{bt:"BT-D",gt:"G11",dept:"마케팅팀"},"L3-070601":{bt:"BT-D",gt:"G24",dept:"마케팅팀"},
+  "L3-070701":{bt:"BT-E",gt:"G11",dept:"마케팅팀"},"L3-070702":{bt:"BT-J",gt:"G28",dept:"마케팅팀"},
+  "L3-080101":{bt:"BT-F",gt:"G33",dept:"IT팀"},"L3-080102":{bt:"BT-F",gt:"G33",dept:"IT팀"},
+  "L3-080201":{bt:"BT-B",gt:"G33",dept:"IT팀"},"L3-080202":{bt:"BT-B",gt:"G11",dept:"IT팀"},
+  "L3-080301":{bt:"BT-F",gt:"G33",dept:"IT팀"},"L3-080302":{bt:"BT-C",gt:"G17",dept:"IT팀"},
+  "L3-080401":{bt:"BT-B",gt:"G26",dept:"IT팀"},"L3-080402":{bt:"BT-C",gt:"G26",dept:"IT팀"},
+  "L3-080403":{bt:"BT-B",gt:"G27",dept:"IT팀"},"L3-080404":{bt:"BT-J",gt:"G28",dept:"IT팀"},
+  "L3-080405":{bt:"BT-J",gt:"G27",dept:"IT팀"},
+  "L3-080501":{bt:"BT-C",gt:"G28",dept:"IT팀"},"L3-080502":{bt:"BT-H",gt:"G28",dept:"IT팀"},
+  "L3-080503":{bt:"BT-F",gt:"G28",dept:"IT팀"},"L3-080601":{bt:"BT-D",gt:"G25",dept:"IT팀"},
+  "L3-080602":{bt:"BT-H",gt:"G29",dept:"IT팀"},
+  "L3-080701":{bt:"BT-D",gt:"G29",dept:"시설팀"},"L3-080702":{bt:"BT-D",gt:"G22",dept:"IT팀"},
+  "L3-080703":{bt:"BT-C",gt:"G28",dept:"IT팀"},
+  "L3-090101":{bt:"BT-H",gt:"G21",dept:"물류팀"},"L3-090102":{bt:"BT-H",gt:"G18",dept:"물류팀"},
+  "L3-090103":{bt:"BT-H",gt:"G18",dept:"물류팀"},"L3-090104":{bt:"BT-H",gt:"G21",dept:"물류팀"},
+  "L3-090201":{bt:"BT-H",gt:"G13",dept:"물류팀"},"L3-090202":{bt:"BT-H",gt:"G11",dept:"물류팀"},
+  "L3-090203":{bt:"BT-H",gt:"G11",dept:"물류팀"},
+  "L3-090301":{bt:"BT-H",gt:"G13",dept:"물류팀"},"L3-090302":{bt:"BT-H",gt:"G11",dept:"물류팀"},
+  "L3-090303":{bt:"BT-H",gt:"G03",dept:"물류팀"},
+  "L3-090401":{bt:"BT-H",gt:"G23",dept:"물류팀"},"L3-090402":{bt:"BT-H",gt:"G23",dept:"물류팀"},
+  "L3-090403":{bt:"BT-H",gt:"G21",dept:"물류팀"},"L3-090404":{bt:"BT-H",gt:"G23",dept:"물류팀"},
+  "L3-090501":{bt:"BT-H",gt:"G25",dept:"물류팀"},"L3-090502":{bt:"BT-H",gt:"G25",dept:"물류팀"},
+  "L3-090503":{bt:"BT-H",gt:"G18",dept:"물류팀"},"L3-090504":{bt:"BT-H",gt:"G21",dept:"물류팀"},
+  "L3-090601":{bt:"BT-J",gt:"G27",dept:"IT팀"},"L3-090602":{bt:"BT-F",gt:"G33",dept:"물류팀"},
+  "L3-090603":{bt:"BT-E",gt:"G19",dept:"물류팀"},"L3-090604":{bt:"BT-E",gt:"G27",dept:"IT팀"},
+  "L3-090701":{bt:"BT-H",gt:"G24",dept:"물류팀"},"L3-090702":{bt:"BT-C",gt:"G11",dept:"재무팀"},
+  "L3-090703":{bt:"BT-E",gt:"G24",dept:"물류팀"},"L3-090704":{bt:"BT-H",gt:"G21",dept:"물류팀"},
+  "L3-100101":{bt:"BT-F",gt:"G33",dept:"생산기술팀"},"L3-100102":{bt:"BT-E",gt:"G11",dept:"생산기술팀"},
+  "L3-100201":{bt:"BT-H",gt:"G01",dept:"생산기술팀"},
+  "L3-100301":{bt:"BT-D",gt:"G33",dept:"생산기술팀"},"L3-100302":{bt:"BT-H",gt:"G22",dept:"생산기술팀"},
+  "L3-100303":{bt:"BT-G",gt:"G24",dept:"생산기술팀"},
+  "L3-100401":{bt:"BT-H",gt:"G21",dept:"생산기술팀"},"L3-100402":{bt:"BT-D",gt:"G25",dept:"생산기술팀"},
+  "L3-100501":{bt:"BT-H",gt:"G22",dept:"생산기술팀"},"L3-100601":{bt:"BT-E",gt:"G32",dept:"생산기술팀"},
+  "L3-110101":{bt:"BT-I",gt:"G25",dept:"R&D팀"},"L3-110102":{bt:"BT-I",gt:"G25",dept:"R&D팀"},
+  "L3-110103":{bt:"BT-I",gt:"G24",dept:"R&D팀"},"L3-110104":{bt:"BT-E",gt:"G24",dept:"R&D팀"},
+  "L3-110201":{bt:"BT-E",gt:"G06",dept:"R&D팀"},"L3-110202":{bt:"BT-E",gt:"G06",dept:"R&D팀"},
+  "L3-110203":{bt:"BT-E",gt:"G06",dept:"R&D팀"},
+  "L3-110301":{bt:"BT-E",gt:"G11",dept:"R&D팀"},"L3-110302":{bt:"BT-E",gt:"G33",dept:"R&D팀"},
+  "L3-110303":{bt:"BT-E",gt:"G33",dept:"R&D팀"},"L3-110304":{bt:"BT-F",gt:"G33",dept:"R&D팀"},
+  "L3-110401":{bt:"BT-J",gt:"G26",dept:"R&D팀"},"L3-110402":{bt:"BT-J",gt:"G27",dept:"R&D팀"},
+  "L3-110501":{bt:"BT-E",gt:"G24",dept:"R&D팀"},"L3-110502":{bt:"BT-E",gt:"G13",dept:"R&D팀"},
+  "L3-110503":{bt:"BT-E",gt:"G24",dept:"R&D팀"},
+  "L3-DRIVER":{bt:"BT-C",gt:"G18",dept:"총무팀"},
+};
+
+var GT_INTAKE_CONFIG={
+  G01:{depth:1,maxTurns:2,ask:["수량"],desc:"카탈로그 직접 주문"},
+  G03:{depth:1,maxTurns:2,ask:["수량","납기"],desc:"계약 카탈로그 발주"},
+  G05:{depth:1,maxTurns:2,ask:["수량"],desc:"VMI 보충 요청"},
+  G06:{depth:2,maxTurns:5,ask:["사양/규격","수량","희망 납기","예산(대략)"],desc:"일반 구매요청"},
+  G09:{depth:1,maxTurns:2,ask:["수량 변경 여부"],desc:"반복 구매"},
+  G11:{depth:3,maxTurns:7,ask:["사양 상세","수량","납기","예산","공급사 선호"],desc:"경쟁 견적(RFQ)"},
+  G13:{depth:3,maxTurns:7,ask:["사양","전략 목표","평가 가중치","예산"],desc:"전략 품목 경쟁"},
+  G16:{depth:1,maxTurns:2,ask:["수량","납기"],desc:"기존 계약 발주"},
+  G17:{depth:2,maxTurns:3,ask:["발주 수량","납기","계약 범위 확인"],desc:"장기 계약 발주"},
+  G18:{depth:2,maxTurns:3,ask:["서비스 내용","기간","계약 범위 확인"],desc:"서비스 계약 발주"},
+  G19:{depth:2,maxTurns:3,ask:["설치 장소","수량","희망일"],desc:"렌탈/리스 신청"},
+  G20:{depth:2,maxTurns:3,ask:["변경 내용","사용자 수","희망일"],desc:"구독 변경/신청"},
+  G21:{depth:2,maxTurns:5,ask:["서비스 범위","기간","예산","요구사항"],desc:"일반 서비스 구매"},
+  G22:{depth:2,maxTurns:5,ask:["대상 장비","주기","SLA 요구사항"],desc:"유지보수 서비스"},
+  G23:{depth:3,maxTurns:7,ask:["시설 범위","서비스 수준","기간","인허가"],desc:"시설관리 서비스"},
+  G24:{depth:3,maxTurns:7,ask:["서비스 유형","범위","예산","자격 요건"],desc:"전문 서비스"},
+  G25:{depth:3,maxTurns:7,ask:["프로젝트 범위","마일스톤","예산","팀 구성"],desc:"프로젝트 서비스"},
+  G26:{depth:2,maxTurns:5,ask:["라이선스 유형","사용자 수","호환성"],desc:"소프트웨어 구매"},
+  G27:{depth:2,maxTurns:3,ask:["플랜","사용자 수","기간"],desc:"SaaS 구독"},
+  G28:{depth:3,maxTurns:7,ask:["서비스 유형","용량","SLA","보안 요건"],desc:"클라우드 서비스"},
+  G29:{depth:2,maxTurns:5,ask:["대상 장비","SLA 수준","기간"],desc:"IT 유지보수"},
+  G30:{depth:3,maxTurns:7,ask:["서비스 범위","기술 요건","예산","기간"],desc:"디지털 서비스"},
+  G31:{depth:1,maxTurns:2,ask:["수량","긴급 사유"],desc:"긴급 구매"},
+  G32:{depth:2,maxTurns:5,ask:["단일 공급 사유","사양","예산"],desc:"단일 공급사 구매"},
+  G33:{depth:3,maxTurns:7,ask:["자산 유형","사양","예산","감가상각"],desc:"자산/CAPEX 구매"},
+  G34:{depth:3,maxTurns:7,ask:["전략 목표","평가 기준","경영진 방향","예산"],desc:"전략적 구매"},
+  G35:{depth:2,maxTurns:5,ask:["특별 승인 사유","대상 품목","예산"],desc:"특별 승인 구매"},
+};
+function getIntakeConfig(gtCode){return GT_INTAKE_CONFIG[gtCode]||{depth:2,maxTurns:5,ask:["사양","수량","납기","예산"],desc:"구매요청"};}
+
+function navigate(text){
+  var cat=matchCategory(text);
+  if(!cat)return{resolved:false,phase:"category_miss"};
+  var con=buildCondition(text,cat);
+
+  // CANON lookup
+  var canon=L3_GT_CANON[cat.l3];
+  var btCode,gt,reason,candidates;
+  if(canon){
+    btCode=canon.bt;gt=canon.gt;reason="품목 확인 완료";candidates=[gt];
+    if(con.urgency){btCode="BT-K";gt="G31";reason="긴급 구매";candidates=["G31"];}
+    else if(con.soleSource){gt="G32";reason="단일 공급사";candidates=["G32"];}
+    else if(con.specialApproval){gt="G35";reason="특별 승인";candidates=["G35"];}
+  }else{
+    btCode=resolveBT(cat.l3,con.urgency);
+    var intent=stabilizeIntent(cat,con);
+    var gtResult=resolveGT(cat,con,intent);
+    if(!gtResult.gtCode)return{resolved:false,phase:"gt_miss",category:cat};
+    gt=gtResult.gtCode;reason=gtResult.reason+" (fallback)";candidates=gtResult.candidates;
+    if(con.urgency)btCode="BT-K";
+  }
+  var bt=BT_META[btCode]||BT_META["BT-E"];
+  var gtInfo=(gt!=="CONTACT"&&GT_REGISTRY[gt])?GT_REGISTRY[gt]:null;
+  var confidence=canon?0.85:0.50;
+  if(con.contract)confidence+=0.10;
+  if(con.urgency||con.soleSource||con.specialApproval)confidence+=0.05;
+  confidence=Math.min(Math.round(confidence*100)/100,1.00);
+  if(cat.cluster==="contact"){gt="CONTACT";candidates=["CONTACT"];gtInfo=null;}
+  var uxGroupKey=gtToUxGroup(gt);
+  if(bt.prAllowed===false&&btCode!=="BT-A"&&uxGroupKey!=="contact_only")uxGroupKey="dept_request";
+  var uxGroup=UX_GROUPS[uxGroupKey]||UX_GROUPS.general_pr;
+  var l3msg=L3_MSG[cat.l3]||null;
+  return{
+    resolved:true,category:cat,condition:con,intent:con.urgency?"EMERGENCY":"CANONICAL",
+    btCode:btCode,bt:bt,gtCode:gt,gtInfo:gtInfo,candidates:candidates,reason:reason,
+    confidence:confidence,contract:con.contract,uxGroupKey:uxGroupKey,guide:uxGroup,
+    l3msg:l3msg,canonical:!!canon,
+  };
+}
+
+
+/* ═══════════════════════════════════════════════════════════════
+   Policy Filters — Blocked / Special Route
+   ═══════════════════════════════════════════════════════════════ */
+var BLOCKED=[
+  // SW05: "술"은 2글자 미만 → "기술","미술","법술" 오탐 → 제거하고 구체적 키워드만 유지
+  {kw:["주류","맥주","소주","와인","위스키","양주","보드카"],reason:"주류는 구매 시스템에서 처리할 수 없습니다.",policy:"구매정책 §3.1",except:["주류검사","주류분석","주류관리"]},
+  {kw:["담배","전자담배","궐련"],reason:"담배류는 구매 불가 품목입니다.",policy:"구매정책 §3.2"},
+  {kw:["현금","현금성","캐시백"],reason:"현금성 자산은 구매 시스템 대상이 아닙니다.",policy:"구매정책 §4.2",except:["현금흐름","현금관리시스템"]},
+  {kw:["개인용","사적용도","사적구매"],reason:"개인 용도 구매는 처리할 수 없습니다.",policy:"구매정책 §1.1",except:["개인정보","개인보호","개인보호장비"]},
+  {kw:["무기","총기","폭발물","화약"],reason:"위험물품은 구매 불가입니다.",policy:"구매정책 §3.3",except:["무기체계분석","무기질"]},
+  {kw:["가상화폐","비트코인","코인","NFT"],reason:"가상자산은 구매 대상이 아닙니다.",policy:"구매정책 §4.3",except:["코인세탁","코인주차","코인로커","코인워시","스타벅스코인"]},
+  {kw:["주식매매","펀드투자","투자상품","채권매입"],reason:"금융투자 상품은 구매 시스템 대상이 아닙니다.",policy:"재무정책 §2.1",except:["투자계획서","투자검토"]},
+];
+function checkBlocked(text){
+  var t=text.toLowerCase();
+  for(let i=0;i<BLOCKED.length;i++){
+    var b=BLOCKED[i];
+    var matched=false;
+    for(let j=0;j<b.kw.length;j++){
+      var kw=b.kw[j];
+      // SW05: 3글자 이하 키워드는 앞뒤가 공백/시작/끝/조사인지 체크 (부분문자열 오탐 방지)
+      if(kw.length<=3){
+        // 앞뒤 경계 체크: 키워드가 다른 단어의 일부인지 확인
+        var idx=t.indexOf(kw);
+        while(idx>=0){
+          var before=idx===0||/[\s,.()\[\]{}·:;!?\/]/.test(t[idx-1]);
+          var after=idx+kw.length>=t.length||/[\s,.()\[\]{}·:;!?\/를을이가은는도에서]/.test(t[idx+kw.length]);
+          if(before&&after){matched=true;break;}
+          idx=t.indexOf(kw,idx+1);
+        }
+      }else{
+        if(t.indexOf(kw)>=0){matched=true;}
+      }
+      if(matched)break;
+    }
+    if(!matched)continue;
+    // 예외 키워드 체크 — 오탐 방지
+    if(b.except){let excepted=false;for(let e=0;e<b.except.length;e++){if(t.indexOf(b.except[e])>=0){excepted=true;break;}}if(excepted)continue;}
+    return b;
+  }
+  return null;
+}
+
+var BUYER={name:"조성호 과장",dept:"구매팀",ext:"4202"};
+
+
+/* ═══════════════════════════════════════════════════════════════
+   Main App Component
+   ═══════════════════════════════════════════════════════════════ */
+function App(){
+  var[msgs,setMsgs]=useState([]);
+  var[input,setInput]=useState("");
+  var[busy,setBusy]=useState(false);
+  var[loadStage,setLoadStage]=useState(0);
+  var[guide,setGuide]=useState(null);
+  var[navResult,setNavResult]=useState(null);
+  var[formData,setFormData]=useState({});
+  var[formDone,setFormDone]=useState(false);
+  // Confidence 분기 상태: null|"auto"|"choice"|"clarify"
+  var[confBranch,setConfBranch]=useState(null);
+  var[candidateLabels,setCandidateLabels]=useState(null); // §5.2 후보 버튼 라벨
+  var[turnCount,setTurnCount]=useState(0);
+  var chatRef=useRef(null);
+  var navContextRef=useRef(null);
+  // SW02: 활성 타이머 추적 — reset/unmount 시 정리
+  var timersRef=useRef([]);
+
+  useEffect(function(){if(chatRef.current)chatRef.current.scrollTo({top:chatRef.current.scrollHeight,behavior:"smooth"});},[msgs,busy]);
+  // SW02: 컴포넌트 언마운트 시 모든 타이머 정리
+  useEffect(function(){return function(){timersRef.current.forEach(function(id){clearTimeout(id);});timersRef.current=[];};},[]);
+
+  // SW02: 안전한 setTimeout 래퍼 — 자동 추적 + 완료 시 자동 제거
+  function safeTimeout(fn, ms){
+    var id=setTimeout(function(){
+      timersRef.current=timersRef.current.filter(function(t){return t!==id;});
+      fn();
+    }, ms);
+    timersRef.current.push(id);
+    return id;
+  }
+  // SW02: 모든 활성 타이머 제거
+  function clearAllTimers(){
+    timersRef.current.forEach(function(id){clearTimeout(id);});
+    timersRef.current=[];
+  }
+
+  function reset(){clearAllTimers();setMsgs([]);setInput("");setGuide(null);setNavResult(null);setFormData({});setFormDone(false);setBusy(false);setLoadStage(0);setConfBranch(null);setCandidateLabels(null);setTurnCount(0);llmCallRef.current=0;navContextRef.current=null;}
+
+  var LLM_MAX_CALLS=10;
+  var llmCallRef=useRef(0);
+
+  function buildSystemPrompt(nav){
+    var base="당신은 기업 간접구매 AI 도우미입니다.\n\n";
+    if(nav&&nav.resolved){
+      var ic=getIntakeConfig(nav.gtCode);
+      var dept=nav.category?getOwner(nav.category.l3):"";
+      base+="[이미 파악된 정보]\n- 품목: "+(nav.category?nav.category.name:"미확정")+"\n- 구매방법: "+ic.desc+"\n";
+      if(dept)base+="- 담당부서: "+dept+"\n";
+      if(nav.contract)base+="- 기존계약: "+nav.contract.vendor+"\n";
+      base+="\n[규칙] 따뜻한 대화체, 2~3문장, 시스템용어 금지\n";
+      base+="품목 불명 시 1가지만 질문\n";
+    }else{
+      base+="[상황] 품목 불분명. 어떤 품목인지 1가지만 질문.\n";
+      base+="[규칙] 따뜻한 대화체, 2~3문장, 시스템용어 금지\n";
+    }
+    return base;
+  }
+
+  async function callLLM(text){
+    if(llmCallRef.current>=LLM_MAX_CALLS)return{text:"구매팀(내선 "+BUYER.ext+")에 직접 문의해 주세요.",handoff:false};
+    llmCallRef.current++;
+    try{
+      var history=msgs.filter(function(m){return m.role==="user"||m.role==="ai";}).slice(-8).map(function(m){return{role:m.role==="user"?"user":"assistant",content:m.content};});
+      history.push({role:"user",content:text});
+      var res=await fetch("https://api.anthropic.com/v1/messages",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({model:"claude-sonnet-4-20250514",max_tokens:400,system:buildSystemPrompt(navContextRef.current),messages:history})});
+      var data=await res.json();
+      var raw=data.content?data.content.map(function(c){return c.text||"";}).join(""):"다시 말씀해 주시겠어요?";
+      var hasHandoff=raw.indexOf("[HANDOFF]")>=0;
+      return{text:raw.replace(/\[HANDOFF\]/g,"").trim(),handoff:hasHandoff};
+    }catch(e){return{text:null,handoff:false,error:true};}
+  }
+
+  function send(text){
+    text=(text||input).trim();if(!text||busy)return;
+    setInput("");
+    setMsgs(function(p){return p.concat([{role:"user",content:text}]);});
+
+    var blocked=checkBlocked(text);
+    if(blocked){
+      logEvent({type:"BLOCKED",from:"READY",to:"EXECUTION_BLOCKED",trigger:"policy",engine:"A01",payload:{reason:blocked.reason,policy:blocked.policy}});
+      setMsgs(function(p){return p.concat([{role:"ai",content:"⛔ 구매 불가\n\n"+blocked.reason+"\n\n📋 근거: "+blocked.policy+"\n\n다른 품목을 말씀해 주세요.",blocked:true}]);});
+      return;
+    }
+
+    // CANON 조회
+    if(!navContextRef.current){
+      var nav=navigate(text);
+      if(nav.resolved){
+        navContextRef.current=nav;
+        setNavResult(nav);setGuide(nav.guide);setConfBranch("auto");
+        var dept=nav.category?getOwner(nav.category.l3):"";
+        var catName=nav.category?nav.category.name:"";
+        var cv=nav.contract?nav.contract.vendor:"";
+        logExecution("CANON_DIRECT",nav);
+
+        if(nav.uxGroupKey==="catalog"){
+          var cm1=catName+", 확인했어요!";
+          cm1+=cv?("\n"+cv+" 카탈로그에서 바로 주문하실 수 있어요."):"\n카탈로그에서 검색 → 수량 선택 → 주문하시면 됩니다.";
+          setMsgs(function(p){return p.concat([{role:"ai",content:cm1,done:true}]);});return;
+        }
+        if(nav.uxGroupKey==="contact_only"){
+          setMsgs(function(p){return p.concat([{role:"ai",content:catName+", 확인했어요!\n계약 업체가 있어서 전화 한 통이면 됩니다.\n오른쪽 연락처를 확인해 주세요."}]);});return;
+        }
+        // ── depth 기반 라우팅 ──
+        var ic=getIntakeConfig(nav.gtCode);
+        var cm2=catName+", 확인했어요!";
+        if(cv)cm2+="\n"+cv+" 계약이 있네요.";
+        if(dept)cm2+="\n"+dept+"에서 처리됩니다.";
+
+        if(ic.depth===1){
+          // 경로 A — BSM 직행 (카탈로그/소액/반복/기존계약)
+          cm2+="\n\n오른쪽에서 신청서를 작성해 주세요.";
+          setMsgs(function(p){return p.concat([{role:"ai",content:cm2,done:true}]);});return;
+        }else{
+          // 경로 C/D — 사양 구조화 필요 → 10_requirement로 이동
+          var askList=ic.ask.slice(0,2).join(", ");
+          cm2+="\n\n"+askList+" 등 몇 가지 확인이 필요해요.";
+          cm2+="\n다음 단계(요건 정리)로 이동합니다.";
+          setMsgs(function(p){return p.concat([{role:"ai",content:cm2,done:true,nextScreen:"requirement"}]);});return;
+        }
+      }
+    }else{
+      var reNav=navigate(text);
+      if(reNav.resolved&&(!navContextRef.current||!navContextRef.current.resolved)){
+        navContextRef.current=reNav;setNavResult(reNav);setGuide(reNav.guide);setConfBranch("auto");
+        var d2=reNav.category?getOwner(reNav.category.l3):"";
+        logExecution("CANON_RESOLVED",reNav);
+        var cm3=reNav.category.name+", 찾았어요!";
+        if(reNav.contract)cm3+="\n"+reNav.contract.vendor+" 계약이 있네요.";
+        if(d2)cm3+="\n"+d2+"에서 처리됩니다.";
+        var ic2=getIntakeConfig(reNav.gtCode);
+        if(ic2.depth===1){
+          cm3+="\n\n오른쪽에서 신청서를 작성해 주세요.";
+          setMsgs(function(p){return p.concat([{role:"ai",content:cm3,done:true}]);});
+        }else{
+          var askList2=ic2.ask.slice(0,2).join(", ");
+          cm3+="\n\n"+askList2+" 등 몇 가지 확인이 필요해요.";
+          cm3+="\n다음 단계(요건 정리)로 이동합니다.";
+          setMsgs(function(p){return p.concat([{role:"ai",content:cm3,done:true,nextScreen:"requirement"}]);});
+        }
+        setMsgs(function(p){return p.concat([{role:"ai",content:cm3,done:true}]);});
+        setBusy(false);setLoadStage(0);return;
+      }
+    }
+
+    // LLM 대화 (품목 미식별 시)
+    setBusy(true);setLoadStage(1);
+    safeTimeout(function(){setLoadStage(2);safeTimeout(async function(){
+      setLoadStage(3);
+      try{
+        var llm=await callLLM(text);
+        if(llm.error){
+          var nv=navContextRef.current;
+          if(nv&&nv.resolved){
+            setConfBranch("auto");
+            setMsgs(function(p){return p.concat([{role:"ai",content:nv.category.name+", 확인했어요.\n오른쪽에서 신청서를 작성해 주세요."}]);});
+          }else{
+            setMsgs(function(p){return p.concat([{role:"ai",content:"네트워크 오류가 발생했어요.\n구매팀(내선 "+BUYER.ext+")에 직접 연락해 주세요."}]);});
+          }
+        }else if(llm.handoff){
+          if(navContextRef.current){setConfBranch("auto");logExecution("HANDOFF_COMPLETE",navContextRef.current);}
+          setMsgs(function(p){return p.concat([{role:"ai",content:llm.text,done:!!navContextRef.current}]);});
+        }else{
+          setMsgs(function(p){return p.concat([{role:"ai",content:llm.text}]);});
+          if(navContextRef.current&&navContextRef.current.resolved&&!guide){
+            setGuide(navContextRef.current.guide);setNavResult(navContextRef.current);
+          }
+        }
+      }finally{setBusy(false);setLoadStage(0);}
+    },300);},300);
+  }
+
+  var QUICK_CATEGORIES=[
+    {label:"🛒 사무용품·소모품",prompt:"사무용품 구매"},
+    {label:"💻 IT·SW·구독",prompt:"IT 소프트웨어 구매"},
+    {label:"🔧 시설·설비·공사",prompt:"시설 유지보수 공사"},
+    {label:"🤝 서비스·용역",prompt:"서비스 용역 구매"},
+    {label:"📊 마케팅·광고",prompt:"마케팅 광고 대행"},
+    {label:"🚛 물류·운송",prompt:"물류 운송 서비스"},
+    {label:"🔄 렌탈·구독·리스",prompt:"렌탈 리스 신청"},
+    {label:"⚡ 긴급 구매",prompt:"긴급 구매"},
+    {label:"📞 담당자 연결",prompt:"구매팀 담당자 연결해주세요"},
+  ];
+
+  function submitForm(){
+    if(!guide||!guide.form)return;
+    setFormDone(true);
+    var ci=navResult&&navResult.contract;
+    var summary=guide.form.map(function(f){return f.l+": "+(formData[f.k]||"미입력");}).join("\n");
+    var target=ci?ci.manager:BUYER.name+" ("+BUYER.dept+")";
+    var gtLabel=navResult&&navResult.gtInfo?navResult.gtInfo.label:"";
+    // SW14: 경로 A 완결 시에도 감사 추적 기록
+    logExecution("FORM_SUBMIT",navResult);
+    setMsgs(function(p){return p.concat([{role:"ai",content:"✅ "+(ci?"신청서":"구매요청서")+"가 제출되었어요!\n\n"+summary+"\n\n👤 "+target+"에게 전달되었습니다.\n진행 상황은 알림으로 안내드릴게요.",done:true}]);});
+  }
+
+  /* ── SW14: Execution Audit Log ──
+     경로 A 완결(카탈로그, 연락처, 폼 제출)에서도 최소 기록 생성.
+     프로덕션: /evidence/log-execution API 호출로 교체.
+     현재: console.log + 내부 상태로 기록 (프로토타입) */
+  function logExecution(action,nav){
+    var entry={
+      execution_id:"EXE-"+Date.now()+"-"+Math.random().toString(36).slice(2,6),
+      timestamp:new Date().toISOString(),
+      action:action,
+      bt_code:nav&&nav.btCode||"UNKNOWN",
+      l3_msg:nav&&nav.l3msg?"Y":"N",
+      l3_access:nav&&nav.l3msg?nav.l3msg.access:"",
+      l3_sla:nav&&nav.l3msg?nav.l3msg.sla:"",
+      l3_warn:nav&&nav.l3msg?nav.l3msg.warn:"",
+      l3_owner:nav&&nav.category?getOwner(nav.category.l3):"",
+      gt_code:nav&&nav.gtCode||"UNKNOWN",
+      route:nav&&nav.gtCode?GT_ROUTE_MAP[nav.gtCode]||"A":"A",
+      category_l3:nav&&nav.category?nav.category.l3:"",
+      confidence:nav&&nav.confidence||0,
+      user:"김형주",
+      state_transition:"준비 → 완료",
+    };
+    // Audit Trail 연동 — logEvent (Append-Only)
+    logEvent({type:action,from:"READY",to:action==="FORM_SUBMIT"?"COMPLETED":"IN_PROGRESS",
+      trigger:"user",engine:"A01",payload:{gt:entry.gt_code,bt:entry.bt_code,route:entry.route,confidence:entry.confidence,l3:entry.category_l3}});
+    // 프로토타입: console에 기록 (프로덕션: API 호출)
+    if(typeof console!=="undefined"&&DEV_MODE)console.log("[BSM Audit]",JSON.stringify(entry));
+    return entry;
+  }
+  // GT → Route 조회용 (logExecution에서 사용)
+  var GT_ROUTE_MAP={G01:"A",G02:"A",G03:"A",G04:"A",G05:"A",G09:"A",G10:"A",G16:"A",G31:"A",CONTACT:"A",G17:"B",G18:"B",G19:"B",G20:"B",G06:"C",G07:"C",G08:"C",G21:"C",G22:"C",G26:"C",G27:"C",G29:"C",G32:"C",G35:"C",G11:"D",G12:"D",G13:"D",G14:"D",G15:"D",G23:"D",G24:"D",G25:"D",G28:"D",G30:"D",G33:"D",G34:"D"};
+
+  var hasStarted=msgs.length>0;
+  var gc=guide?guide.color:T.state.complete;
+
+  return(
+  <div style={{width:"100%",height:"100%",background:"#E8ECF1",display:"flex",flexDirection:"column",fontFamily:T.font.sans,overflow:"hidden"}}>
+    <style>{`@import url('https://cdn.jsdelivr.net/gh/orioncactus/pretendard/dist/web/variable/pretendardvariable-dynamic-subset.css');*{box-sizing:border-box;margin:0;padding:0}::-webkit-scrollbar{width:5px}::-webkit-scrollbar-track{background:transparent}::-webkit-scrollbar-thumb{background:${T.border.light};border-radius:3px}@keyframes fadeUp{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:translateY(0)}}@keyframes pulse{0%,100%{opacity:.4}50%{opacity:1}}button{transition:all .15s ease;font-family:inherit;cursor:pointer}button:hover:not(:disabled){filter:brightness(1.05);transform:translateY(-1px)}input:focus{border-color:${T.border.focus} !important;box-shadow:0 0 0 3px rgba(59,130,246,.15) !important}`}</style>
+
+    {/* ERP Shell */}
+    <div style={{height:28,background:"#2D3748",display:"flex",alignItems:"center",padding:"0 14px",gap:6,flexShrink:0}}>
+      <div style={{display:"flex",gap:4}}><div style={{width:8,height:8,borderRadius:4,background:"#FC5C65"}}/><div style={{width:8,height:8,borderRadius:4,background:"#FED330"}}/><div style={{width:8,height:8,borderRadius:4,background:"#26DE81"}}/></div>
+      <span style={{color:"#A0AEC0",fontSize:10,fontWeight:500,marginLeft:8}}>AI Embedded BSM — 구매 알아보기</span>
+    </div>
+
+    {/* Floating Card */}
+    <div style={{flex:1,display:"flex",alignItems:"center",justifyContent:"center",padding:12,overflow:"hidden"}}>
+    <div style={{width:"100%",maxWidth:1020,height:"100%",maxHeight:"85%",display:"flex",flexDirection:"column",borderRadius:T.radius.xl,overflow:"hidden",boxShadow:T.shadow.overlay,background:T.surface}}>
+
+    <div style={{flex:1,display:"flex",overflow:"hidden",minHeight:0}}>
+      {/* Chat */}
+      <div style={{flex:1,display:"flex",flexDirection:"column",background:T.surfAlt,minWidth:0}}>
+        {/* Header */}
+        <div style={{background:"linear-gradient(135deg,"+T.brand+","+T.brandLt+")",color:"#FFF",padding:"10px 20px",display:"flex",alignItems:"center",justifyContent:"space-between",flexShrink:0}}>
+          <div style={{display:"flex",alignItems:"center",gap:10}}>
+            <div style={{width:32,height:32,borderRadius:8,background:"rgba(255,255,255,.15)",display:"flex",alignItems:"center",justifyContent:"center",fontSize:16}}>🛒</div>
+            <div><div style={{fontWeight:700,fontSize:16,letterSpacing:-0.5}}>AI Embedded BSM<span style={{fontSize:12,fontWeight:400,opacity:.7,marginLeft:8}}>구매 알아보기</span></div><div style={{fontSize:11,opacity:.7}}>BT(11)×GT(35) + L3(152) Guided Buying v9</div></div>
+          </div>
+          <div style={{display:"flex",alignItems:"center",gap:8}}>
+            {hasStarted&&<button onClick={reset} style={{padding:"5px 14px",borderRadius:T.radius.md,border:"1px solid rgba(255,255,255,.35)",background:"rgba(255,255,255,.1)",color:"#FFF",fontSize:12,fontWeight:500}}>처음으로</button>}
+            <div style={{display:"flex",alignItems:"center",gap:6,padding:"4px 12px",borderRadius:T.radius.md,background:"rgba(255,255,255,.15)"}}>
+              <div style={{width:24,height:24,borderRadius:12,background:"rgba(255,255,255,.25)",display:"flex",alignItems:"center",justifyContent:"center",fontSize:11,fontWeight:700}}>김</div>
+              <span style={{fontSize:13,fontWeight:500}}>김형주 과장</span>
+            </div>
+          </div>
+        </div>
+
+        {/* Guide Status Bar — BT(경로) + GT(전략) 2-Layer 표시 */}
+        {guide&&guide.id!=="contact_only"&&!formDone&&(
+          <div style={{padding:"8px 20px",background:gc.bg,borderBottom:"2px solid "+gc.accent,display:"flex",alignItems:"center",justifyContent:"space-between",flexShrink:0}}>
+            <div style={{display:"flex",alignItems:"center",gap:8}}>
+              <span style={{fontSize:16}}>{guide.icon}</span>
+              <span style={{fontSize:15,fontWeight:700,color:gc.fg}}>{guide.name}</span>
+              {/* BT 배지 (접근 경로) */}
+              {navResult&&navResult.bt&&<Badge color="#1E3A8A" bg="#DBEAFE">{navResult.bt.icon} {navResult.bt.name}</Badge>}
+              {/* Confidence 시각 표시 (퍼센트 숫자는 노출하지 않음 — §7.2) */}
+              {navResult&&navResult.confidence>=0.80&&<Badge color={T.state.complete.fg} bg={T.state.complete.bg}>추천</Badge>}
+              {navResult&&navResult.confidence>=0.60&&navResult.confidence<0.80&&<Badge color={T.state.review.fg} bg={T.state.review.bg}>확인 필요</Badge>}
+              {navResult&&navResult.confidence<0.60&&<Badge color={T.state.blocked.fg} bg={T.state.blocked.bg}>추가 확인</Badge>}
+            </div>
+            <span style={{fontSize:12,color:gc.fg,fontWeight:500}}>{guide.youDo}</span>
+          </div>
+        )}
+
+        {/* Chat Area */}
+        <div ref={chatRef} style={{flex:1,overflowY:"auto",padding:"14px 20px",display:"flex",flexDirection:"column",gap:10}}>
+          {hasStarted&&<div style={{flex:1}}/>}
+
+          {/* Welcome */}
+          {!hasStarted&&(
+            <div style={{display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",flex:1,padding:"20px 0"}}>
+              <div style={{width:56,height:56,borderRadius:16,background:"linear-gradient(135deg,"+T.brand+","+T.brandLt+")",display:"flex",alignItems:"center",justifyContent:"center",fontSize:26,marginBottom:16,boxShadow:"0 8px 24px rgba(37,99,235,.25)"}}>🛒</div>
+              <p style={{fontSize:24,fontWeight:700,color:T.text.primary,letterSpacing:-0.8}}>무엇을 구매하시겠어요?</p>
+              <p style={{fontSize:15,color:T.text.muted,marginTop:6,textAlign:"center",lineHeight:1.6}}>품목을 말씀하시면, 우리 회사 절차에 맞게 안내해 드려요.</p>
+
+              <div style={{width:"100%",maxWidth:500,marginTop:24}}>
+                <input value={input} onChange={function(e){setInput(e.target.value);}} onKeyDown={function(e){if(e.key==="Enter"&&!e.shiftKey){e.preventDefault();send();}}} placeholder="예: 정수기 2대 추가, 노트북 5대 800만원, 볼펜..."
+                  style={{width:"100%",padding:"14px 18px",fontSize:15,borderRadius:T.radius.lg,border:"1px solid "+T.border.medium,outline:"none",background:T.surface,boxShadow:T.shadow.sm,fontFamily:"inherit"}}/>
+              </div>
+            </div>
+          )}
+
+          {/* Messages */}
+          {msgs.map(function(m,i){
+            if(m.role==="user")return <div key={i} style={{display:"flex",justifyContent:"flex-end",animation:"fadeUp .25s ease"}}><div style={{background:T.brand,color:"#FFF",padding:"10px 16px",borderRadius:"14px 14px 4px 14px",maxWidth:"70%",fontSize:15,lineHeight:1.7,whiteSpace:"pre-wrap",letterSpacing:-0.3,boxShadow:"0 2px 8px rgba(30,58,138,.2)"}}>{m.content}</div></div>;
+            if(m.done)return <div key={i} style={{display:"flex",gap:8,animation:"fadeUp .25s ease"}}><AiAvatar v="done"/><div style={{maxWidth:"78%"}}><div style={{background:T.state.complete.bg,padding:"12px 16px",borderRadius:"4px 14px 14px 14px",border:"1px solid "+T.state.complete.border,fontSize:14,color:T.state.complete.fg,lineHeight:1.8,whiteSpace:"pre-wrap",fontWeight:500}}>{m.content}</div></div></div>;
+            if(m.blocked)return <div key={i} style={{display:"flex",gap:8,animation:"fadeUp .25s ease"}}><AiAvatar v="blocked"/><div style={{maxWidth:"78%"}}><div style={{background:T.state.blocked.bg,padding:"12px 16px",borderRadius:"4px 14px 14px 14px",border:"2px solid "+T.state.blocked.accent,fontSize:14,color:T.state.blocked.fg,lineHeight:1.8,whiteSpace:"pre-wrap"}}>{m.content}</div></div></div>;
+            return <div key={i} style={{display:"flex",gap:8,animation:"fadeUp .25s ease"}}><AiAvatar/><div style={{maxWidth:"78%"}}><div style={{background:T.surface,padding:"12px 16px",borderRadius:"4px 14px 14px 14px",border:"1px solid "+T.border.light,fontSize:14,color:T.text.primary,lineHeight:1.8,whiteSpace:"pre-wrap",boxShadow:T.shadow.sm}}>{m.content}</div></div></div>;
+          })}
+
+          {/* §5.2 — Confidence 0.60~0.79: 후보 GT 선택 버튼 */}
+          {confBranch==="choice"&&candidateLabels&&candidateLabels.length>1&&!formDone&&(
+            <div style={{display:"flex",gap:6,flexWrap:"wrap",padding:"4px 0",animation:"fadeUp .25s ease"}}>
+              {candidateLabels.map(function(label,li){return(
+                <button key={li} onClick={function(){
+                  // 선택한 후보로 확정
+                  var selectedGtCode=navResult&&navResult.candidates[li];
+                  if(selectedGtCode&&GT_REGISTRY[selectedGtCode]){
+                    var newUxKey=gtToUxGroup(selectedGtCode);
+                    var newGuide=UX_GROUPS[newUxKey]||UX_GROUPS.general_pr;
+                    setGuide(newGuide);setConfBranch("auto");setCandidateLabels(null);
+                    setNavResult(function(prev){return Object.assign({},prev,{gtCode:selectedGtCode,gtInfo:GT_REGISTRY[selectedGtCode],uxGroupKey:newUxKey,guide:newGuide});});
+                    setMsgs(function(p){return p.concat([{role:"ai",content:newGuide.icon+" "+newGuide.name+"(으)로 안내해 드릴게요.\n\n오른쪽에서 확인해 주세요.",done:true}]);});
+                  }
+                }} style={{padding:"8px 16px",borderRadius:T.radius.full,border:li===0?"none":"1px solid "+T.border.medium,background:li===0?T.state.progress.accent:T.surface,color:li===0?"#FFF":T.text.secondary,fontSize:13,fontWeight:li===0?600:400,cursor:"pointer"}}>
+                  {label}{li===0?" (추천)":""}
+                </button>
+              );})}
+            </div>
+          )}
+
+          {/* Loading */}
+          {busy&&(
+            <div style={{display:"flex",gap:8,animation:"fadeUp .2s ease"}}><AiAvatar/>
+              <div style={{background:T.surface,padding:"12px 16px",borderRadius:"4px 14px 14px 14px",border:"1px solid "+T.border.light,fontSize:13,color:T.text.muted}}>
+                <div style={{display:"flex",alignItems:"center",gap:6,marginBottom:6}}>
+                  {["요청 확인","정보 정리","경로 탐색"].map(function(step,si){var ph=si+1;var dn=loadStage>ph;var ac=loadStage===ph;return(
+                    <div key={si} style={{display:"flex",alignItems:"center",gap:4}}>
+                      <div style={{width:16,height:16,borderRadius:8,display:"flex",alignItems:"center",justifyContent:"center",fontSize:8,fontWeight:700,background:dn?T.state.complete.accent:ac?T.state.progress.accent:T.border.light,color:dn||ac?"#FFF":T.text.muted}}>{dn?"✓":ph}</div>
+                      <span style={{fontSize:12,color:ac?T.state.progress.fg:dn?T.state.complete.fg:T.text.muted,fontWeight:ac?600:400}}>{step}</span>
+                      {si<2&&<span style={{color:T.border.medium,fontSize:10}}>→</span>}
+                    </div>);})}
+                </div>
+                <div style={{display:"flex",alignItems:"center",gap:6}}>
+                  <span style={{display:"flex",gap:3}}>{[0,1,2].map(function(d){return <span key={d} style={{width:5,height:5,borderRadius:3,background:T.state.progress.accent,animation:"pulse .8s ease "+d*0.15+"s infinite"}}/>;})}</span>
+                  <span style={{fontSize:13}}>{({1:"요청 확인 중...",2:"정보 정리 중...",3:"최적 경로 탐색 중..."})[loadStage]||"확인 중..."}</span>
+                </div>
+              </div>
+            </div>)}
+        </div>
+
+        {/* Input (after start) */}
+        {hasStarted&&!formDone&&(
+          <div style={{padding:"10px 20px",borderTop:"1px solid "+T.border.light,background:T.surface}}>
+            <div style={{display:"flex",gap:8}}>
+              <input value={input} onChange={function(e){setInput(e.target.value);}} onKeyDown={function(e){if(e.key==="Enter"&&!e.shiftKey){e.preventDefault();send();}}} placeholder="추가 질문이 있으시면 말씀해 주세요..." disabled={busy}
+                style={{flex:1,padding:"10px 14px",borderRadius:T.radius.md,border:"1px solid "+T.border.medium,fontSize:14,outline:"none",fontFamily:"inherit"}}/>
+              <button onClick={function(){send();}} disabled={!input.trim()||busy} style={{padding:"10px 20px",borderRadius:T.radius.md,border:"none",background:input.trim()&&!busy?T.brand:T.border.light,color:input.trim()&&!busy?"#FFF":T.text.muted,fontSize:14,fontWeight:600}}>전송</button>
+            </div>
+          </div>)}
+      </div>
+
+      {/* ── Right Panel ── */}
+      {guide&&(
+        <div style={{width:280,background:T.surface,borderLeft:"1px solid "+T.border.light,display:"flex",flexDirection:"column",flexShrink:0}}>
+          <div style={{padding:"10px 14px",borderBottom:"2px solid "+gc.accent,fontSize:14,fontWeight:700,color:gc.fg,background:gc.bg}}>
+            {guide.icon} {guide.name}
+          </div>
+          <div style={{flex:1,overflowY:"auto",padding:10,display:"flex",flexDirection:"column",gap:10}}>
+            {/* 안내 요약 카드 — L3 메시지 우선, 없으면 UX_GROUPS */}
+            <div style={{padding:12,borderRadius:T.radius.md,background:gc.bg,border:"1px solid "+gc.border}}>
+              <div style={{fontSize:12,fontWeight:600,color:gc.fg,marginBottom:6}}>우리 회사 절차</div>
+              {navResult&&navResult.l3msg?(
+                <div style={{fontSize:13,color:T.text.primary,lineHeight:1.7}}>
+                  <div style={{fontWeight:600,marginBottom:4}}>{navResult.l3msg.m}</div>
+                  {navResult.l3msg.m2&&<div>{navResult.l3msg.m2}</div>}
+                  {navResult.l3msg.m3&&<div>{navResult.l3msg.m3}</div>}
+                  {navResult.l3msg.sla&&<div style={{fontSize:12,color:gc.fg,marginTop:6}}>⚡ 처리시간: {navResult.l3msg.sla}</div>}
+                  {navResult.category&&getOwner(navResult.category.l3)&&<div style={{fontSize:12,color:gc.fg}}>👤 담당: {getOwner(navResult.category.l3)}</div>}
+                </div>
+              ):(
+                <div style={{fontSize:13,color:T.text.primary,lineHeight:1.7,whiteSpace:"pre-wrap"}}>{guide.guide}</div>
+              )}
+            </div>
+
+            {/* L3 전용 액션버튼 — 첫번째=주요 액션, 나머지=보조 */}
+            {navResult&&navResult.l3msg&&navResult.l3msg.btns&&navResult.l3msg.btns.length>0&&!formDone&&!guide.bsmAction&&(
+              <div style={{display:"flex",flexDirection:"column",gap:4}}>
+                {navResult.l3msg.btns.map(function(btn,bi){return(
+                  <button key={bi} onClick={function(){
+                    if(bi===0){
+                      logExecution("L3_ACTION_PRIMARY",navResult);
+                      setMsgs(function(p){var ow=navResult.category?getOwner(navResult.category.l3):"";return p.concat([{role:"ai",content:"✅ ["+btn+"] 요청이 접수되었어요.\n"+(navResult.l3msg.sla?"⚡ 처리시간: "+navResult.l3msg.sla:"")+"\n"+(ow?"👤 담당: "+ow:"")+"\n\n다음 단계(요건 구조화)로 이동합니다.",done:true}]);});
+                      setFormDone(true);
+                    }else{
+                      logExecution("L3_ACTION_SUB_"+bi,navResult);
+                      setMsgs(function(p){return p.concat([{role:"ai",content:"📋 ["+btn+"] 기능은 BSM 시스템에서 확인하실 수 있어요."}]);});
+                    }
+                  }} style={{width:"100%",padding:"10px 14px",borderRadius:T.radius.md,border:bi===0?"none":"1px solid "+gc.border,background:bi===0?gc.accent:T.surface,color:bi===0?"#FFF":gc.fg,fontSize:13,fontWeight:bi===0?600:400,cursor:"pointer"}}>{btn}</button>
+                );})}
+              </div>
+            )}
+            <div style={{padding:10,borderRadius:T.radius.md,background:T.surfAlt,border:"1px solid "+T.border.light}}>
+              <div style={{fontSize:11,fontWeight:600,color:T.text.muted,marginBottom:4}}>이후 프로세스</div>
+              <div style={{fontSize:12,color:T.text.secondary,lineHeight:1.7}}>{guide.next}</div>
+            </div>
+
+            {/* GT 내부 정보 — DEV_MODE에서만 표시 (Intake Spec v3.0 §7.2) */}
+            {DEV_MODE&&navResult&&navResult.gtInfo&&(
+              <div style={{padding:8,borderRadius:T.radius.sm,background:"#F8FAFC",border:"1px dashed "+T.border.light}}>
+                <div style={{fontSize:10,fontWeight:600,color:T.text.muted,marginBottom:2}}>🔧 시스템 (개발용)</div>
+                <div style={{fontSize:11,color:T.text.muted,lineHeight:1.5}}>
+                  {navResult.btCode&&<><span style={{fontWeight:600}}>{navResult.btCode}</span> · {navResult.bt&&navResult.bt.name}<br/></>}
+                  {navResult.gtCode} · {navResult.gtInfo.name}<br/>
+                  Confidence: {navResult.confidence} · {navResult.gtInfo.tier}
+                  {navResult.candidates.length>1&&<><br/>후보: {navResult.candidates.join(", ")}</>}
+                </div>
+              </div>
+            )}
+
+            {/* BT 접근 경로 + L3 접근권한 */}
+            {navResult&&navResult.bt&&(
+              <div style={{padding:10,borderRadius:T.radius.md,border:"1px solid #93C5FD",background:"#EFF6FF"}}>
+                <div style={{fontSize:11,fontWeight:600,color:"#1E3A8A",marginBottom:4}}>{navResult.bt.icon} {navResult.bt.name}</div>
+                <div style={{fontSize:12,color:"#1E40AF",lineHeight:1.6}}>{navResult.bt.access}</div>
+                {navResult.l3msg&&navResult.l3msg.access&&<div style={{fontSize:11,color:"#1E3A8A",marginTop:4,padding:"3px 8px",borderRadius:4,background:"rgba(30,58,138,0.08)",display:"inline-block"}}>🔑 {navResult.l3msg.access}</div>}
+                {navResult.bt.ownerDept&&<div style={{fontSize:11,color:"#1E3A8A",fontWeight:500,marginTop:4}}>👤 담당: {navResult.bt.ownerDept}</div>}
+              </div>
+            )}
+
+            {/* 위반코드 경고 — L3 품목별 우선, 없으면 BT 공통 */}
+            {navResult&&(navResult.l3msg&&navResult.l3msg.warn||navResult.bt&&navResult.bt.violCodes&&navResult.bt.violCodes.length>0)&&(
+              <div style={{padding:8,borderRadius:T.radius.sm,background:"#FEF2F2",border:"1px solid #FCA5A5"}}>
+                <div style={{fontSize:10,fontWeight:600,color:"#991B1B",marginBottom:3}}>⛔ 주요 위반 시 자동 차단</div>
+                {navResult.l3msg&&navResult.l3msg.warn?
+                  navResult.l3msg.warn.split("\n").map(function(v,vi){return <div key={vi} style={{fontSize:10,color:"#7F1D1D",lineHeight:1.5}}>• {v}</div>;})
+                  :navResult.bt.violCodes.map(function(v,vi){return <div key={vi} style={{fontSize:10,color:"#7F1D1D",lineHeight:1.5}}>• {v}</div>;})}
+              </div>
+            )}
+
+            {/* 계약 정보 */}
+            {navResult&&navResult.contract&&(
+              <div style={{padding:10,borderRadius:T.radius.md,background:"#FFF",border:"1px solid "+gc.border}}>
+                <div style={{fontSize:11,fontWeight:600,color:gc.fg,marginBottom:4}}>계약 정보</div>
+                <div style={{fontSize:12,color:T.text.primary}}>업체: {navResult.contract.vendor}</div>
+                <div style={{fontSize:12,color:T.text.muted}}>계약: {navResult.contract.contract}</div>
+                {navResult.contract.expiry&&<div style={{fontSize:11,color:T.text.muted}}>만료: {navResult.contract.expiry}</div>}
+                <div style={{fontSize:12,color:T.text.primary,fontWeight:500,marginTop:4}}>👤 {navResult.contract.manager}</div>
+              </div>
+            )}
+
+            {/* 폼 또는 카탈로그 버튼 */}
+            {guide.id==="catalog"&&!formDone&&(
+              <button onClick={function(){logExecution("CATALOG_NAVIGATE",navResult);setMsgs(function(p){return p.concat([{role:"ai",content:"🛒 카탈로그 시스템으로 이동합니다.",done:true}]);});}} style={{width:"100%",padding:"11px 14px",borderRadius:T.radius.md,border:"none",background:gc.accent,color:"#FFF",fontSize:14,fontWeight:600}}>🛒 카탈로그로 이동</button>
+            )}
+
+            {/* BSM 신청서 이동 — bsmAction이 있는 UX_GROUP */}
+            {guide.bsmAction&&!formDone&&(function(){
+              var dept=navResult&&navResult.category?getOwner(navResult.category.l3):"";
+              var gtCode=navResult&&navResult.gtCode?navResult.gtCode:"G06";
+              var ic=getIntakeConfig(gtCode);
+              if(ic.depth===1){
+                var btnLabel=dept?"BSM "+dept+" 신청서 작성":"BSM 신청서 작성";
+                return <button onClick={function(){logExecution("BSM_FORM_NAVIGATE",navResult);setFormDone(true);var cm=dept?dept+" 신청서로 이동합니다.":"BSM 신청서로 이동합니다.";if(navResult&&navResult.contract)cm+="\n계약: "+navResult.contract.contract+" ("+navResult.contract.vendor+")";setMsgs(function(p){return p.concat([{role:"ai",content:cm,done:true}]);});}} style={{width:"100%",padding:"13px 14px",borderRadius:T.radius.md,border:"none",background:gc.accent,color:"#FFF",fontSize:14,fontWeight:600,cursor:"pointer"}}>{btnLabel}</button>;
+              }else{
+                var askPreview=ic.ask.slice(0,2).join(", ");
+                return <button onClick={function(){logExecution("GOTO_REQUIREMENT",navResult);setFormDone(true);setMsgs(function(p){return p.concat([{role:"ai",content:"요건 정리 화면으로 이동합니다.\n"+askPreview+" 등을 확인할게요.",done:true,nextScreen:"requirement"}]);});}} style={{width:"100%",padding:"13px 14px",borderRadius:T.radius.md,border:"none",background:gc.accent,color:"#FFF",fontSize:14,fontWeight:600,cursor:"pointer"}}>요건 정리 시작 →</button>;
+              }
+            })()}
+
+            {/* 연락처 안내 */}
+            {guide.contacts&&guide.contacts.filter(function(ct){return !navResult||!navResult.category||ct.l3===navResult.category.l3;}).map(function(ct,ci){return(
+              <div key={ci} style={{padding:14,borderRadius:T.radius.md,background:gc.bg,border:"2px solid "+gc.accent}}>
+                <div style={{fontSize:14,fontWeight:700,color:gc.fg,marginBottom:8}}>{ct.name}</div>
+                <div style={{fontSize:13,color:T.text.primary,marginBottom:4}}>업체: {ct.vendor}</div>
+                <div style={{display:"flex",alignItems:"center",gap:8,padding:"10px 12px",borderRadius:T.radius.md,background:T.surface,border:"1px solid "+gc.border,marginBottom:8}}>
+                  <span style={{fontSize:20}}>📞</span>
+                  <span style={{fontSize:18,fontWeight:700,color:gc.fg,letterSpacing:0.5}}>{ct.phone}</span>
+                </div>
+                <div style={{fontSize:12,color:T.text.secondary,lineHeight:1.6}}>{ct.note}</div>
+              </div>
+            );})}
+
+
+            {formDone&&(
+              <div style={{padding:12,borderRadius:T.radius.md,background:T.state.complete.bg,border:"1px solid "+T.state.complete.border,fontSize:13,color:T.state.complete.fg,lineHeight:1.6}}>
+                ✅ 제출 완료!<br/>담당자에게 전달되었습니다.
+                <div style={{marginTop:8,padding:"8px 10px",borderRadius:T.radius.sm,background:"rgba(22,101,52,0.08)",fontSize:11,color:T.text.secondary,lineHeight:1.5}}>
+                  💡 AI가 작성한 초안이며, 전달 전 검토·수정이 가능합니다.<br/>추적번호가 이메일로 발송됩니다.
+                </div>
+              </div>
+            )}
+
+            {/* 담당자 */}
+            {guide.id!=="catalog"&&guide.id!=="contact_only"&&(
+              <div style={{padding:"8px 10px",borderRadius:T.radius.md,border:"1px solid "+T.border.light,background:T.surfAlt}}>
+                <div style={{fontSize:13,fontWeight:600,color:T.text.primary}}>{BUYER.name}</div>
+                <div style={{fontSize:11,color:T.text.secondary}}>{BUYER.dept} · 내선 {BUYER.ext}</div>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+    </div>
+    </div>
+    </div>
+  </div>);
+}
+
+ReactDOM.createRoot(document.getElementById('root')).render(<App />);
+</script>
+</body>
+</html>

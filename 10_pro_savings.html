@@ -1,0 +1,333 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>BSM - 10 비용 절감 (PRO v2.0)</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { font-family: 'Pretendard Variable', Pretendard, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; }
+  #root { width: 100%; min-height: 100vh; }
+</style>
+</head>
+<body>
+<div id="root"></div>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.9/babel.min.js"></script>
+<script type="text/babel">
+const { useState, useRef, useEffect, useCallback, useMemo } = React;
+
+
+
+/* ═══════════════════════════════════════════════════════════════
+   AI-Embedded BSM PRO — 비용 절감 인사이트
+   bsm_pro_savings.jsx v2.0
+   ─── Canonical Alignment ───
+   Service: SCRL Functional Scope v1.0 (§3.1~3.2)
+   T-Series: T01 Demand + T05 Case Similarity + T09 Ranking + T10 Cost Anomaly
+   Signal: Procurement Signal Def. v1.0 (Cost Intelligence, Competitive Sourcing)
+   Output: §6.1 Cost Insight + §6.2 Savings Opportunity + §6.3 Price Risk Alert
+   ═══════════════════════════════════════════════════════════════ */
+
+var C = {
+  brand:"#1E3A8A", white:"#FFFFFF", bg:"#F8FAFC",
+  t1:"#0F172A", t2:"#475569", t3:"#94A3B8",
+  bl:"#E2E8F0", bm:"#CBD5E1",
+  r:{sm:6,md:10,lg:14,xl:20,full:9999},
+  ok:{bg:"#F0FDF4",fg:"#166534",ac:"#22C55E",bd:"#86EFAC"},
+  warn:{bg:"#FFFBEB",fg:"#92400E",ac:"#F59E0B",bd:"#FCD34D"},
+  err:{bg:"#FEF2F2",fg:"#991B1B",ac:"#EF4444",bd:"#FCA5A5"},
+  info:{bg:"#EFF6FF",fg:"#1E40AF",ac:"#3B82F6",bd:"#93C5FD"},
+  purple:{bg:"#F5F3FF",fg:"#5B21B6",ac:"#7C3AED",bd:"#C4B5FD"},
+};
+
+function Badge({children,color,bg}){
+  return <span style={{display:"inline-block",fontSize:10,fontWeight:600,padding:"2px 8px",borderRadius:C.r.full,color:color,background:bg}}>{children}</span>;
+}
+
+// ── 이상 단가 탐지 (SCRL §3.1) ──
+var ANOMALIES = [
+  {id:"ANO-001",type:"계약 단가 편차",cat:"IT장비·노트북",detail:"최근 구매 단가 ₩178만 vs 계약 단가 ₩162만 — 편차 +9.9%",impact:"₩80만/건",severity:"warn",source:"T10 Cost Anomaly",signal:"Cost Intelligence",count:5},
+  {id:"ANO-002",type:"긴급 구매 프리미엄",cat:"안전장비",detail:"긴급 구매 평균 단가 ₩45만 vs 정상 ₩38만 — 프리미엄 +18.4%",impact:"₩140만/분기",severity:"err",source:"T10+T01 Emergency Premium",signal:"Cost Intelligence",count:8},
+  {id:"ANO-003",type:"시장가 괴리",cat:"클라우드 SaaS",detail:"AWS 단가 시장 평균 대비 +12% — 볼륨 할인 미적용 가능성",impact:"₩520만/년",severity:"warn",source:"T09+T05 Market Benchmark",signal:"Cost Intelligence",count:1},
+  {id:"ANO-004",type:"반복 구매 단가 변동",cat:"사무용품",detail:"복사용지 단가 3개월간 ₩4.2만→₩4.8만→₩5.1만 — 지속 상승",impact:"₩180만/년",severity:"info",source:"T10+T01 Price Variance",signal:"Cost Intelligence",count:12},
+  {id:"ANO-005",type:"공급사별 가격 편차",cat:"시설관리",detail:"동일 청소 용역: ISS ₩260만/월 vs B업체 ₩310만/월 — 편차 19%",impact:"₩600만/년",severity:"info",source:"T09+T05 Supplier Dispersion",signal:"Competitive Sourcing",count:3},
+];
+
+// ── 절감 기회 (SCRL §3.2) ──
+var OPPORTUNITIES = [
+  {id:"SAV-001",type:"구매 통합",title:"클라우드 구독 통합",
+    desc:"AWS+Azure+GCP를 3개 부서가 개별 구독 중. 전사 통합 계약 시 볼륨 할인 20% 가능.",
+    current:"₩5,200만/년 (개별)",target:"₩4,160만/년 (통합)",saving:"₩1,040만",
+    priority:"High",effort:"Medium",timeline:"2개월",status:"미착수",
+    action:"IT팀 주관 전사 클라우드 통합 계약 추진",
+    engine:"T10+T01",signal:"Cost Intelligence"},
+  {id:"SAV-002",type:"장기 계약 전환",title:"사무용품 연간 단가계약",
+    desc:"월별 개별 구매 847건/년 → 연간 단가계약 전환 시 단가 15% 인하 + 관리비 절감.",
+    current:"₩9,600만/년 (개별)",target:"₩8,160만/년 (연간)",saving:"₩1,440만",
+    priority:"High",effort:"Low",timeline:"1개월",status:"검토중",
+    action:"총무팀 오피스디포/알파문구 연간 계약 협상",
+    engine:"T05+T10",signal:"Cost Intelligence"},
+  {id:"SAV-003",type:"공급사 재협상",title:"ISS 시설관리 재협상",
+    desc:"계약 만료 임박. 경쟁 견적 확보 후 재협상 시 5~10% 인하 가능.",
+    current:"₩1,400만/월",target:"₩1,260만/월",saving:"₩1,680만/년",
+    priority:"High",effort:"Medium",timeline:"1.5개월",status:"미착수",
+    action:"시설팀 경쟁 견적 3곳 확보 → 재협상",
+    engine:"T10+T09",signal:"Competitive Sourcing"},
+  {id:"SAV-004",type:"대체 품목",title:"복합기 렌탈 → 구매 전환",
+    desc:"렌탈 5년 TCO ₩4,200만 vs 구매 TCO ₩3,100만. 잔여 렌탈 만료 후 구매 전환.",
+    current:"₩840만/년 (렌탈)",target:"₩620만/년 (구매)",saving:"₩1,100만/5년",
+    priority:"Medium",effort:"Medium",timeline:"6개월 (계약 만료 후)",status:"대기",
+    action:"총무팀 렌탈 만료 시점 구매 전환 검토",
+    engine:"T05+T10",signal:"Cost Intelligence"},
+  {id:"SAV-005",type:"수요 패턴",title:"긴급 구매 사전 예방",
+    desc:"안전장비 긴급 구매 8건/분기. 정기 점검+예비 재고 확보로 긴급 구매 70% 감소 가능.",
+    current:"₩360만/분기 (긴급)",target:"₩108만/분기 (정상)",saving:"₩1,008만/년",
+    priority:"Medium",effort:"Low",timeline:"1개월",status:"미착수",
+    action:"생산팀 안전장비 분기 정기 발주 도입",
+    engine:"T01+T10",signal:"Cost Intelligence"},
+  {id:"SAV-006",type:"구매 통합",title:"택배 볼륨 계약",
+    desc:"5개 부서 개별 택배 이용 → 전사 법인 계약 시 기본료 30% 할인.",
+    current:"₩2,400만/년",target:"₩1,680만/년",saving:"₩720만",
+    priority:"Low",effort:"Low",timeline:"2주",status:"미착수",
+    action:"총무팀 CJ대한통운 법인 볼륨 계약 체결",
+    engine:"T01+T05",signal:"Cost Intelligence"},
+];
+
+var TOTAL_SAVING = OPPORTUNITIES.reduce(function(s,o){
+  var v=o.saving.replace(/[^0-9]/g,"");return s+parseInt(v||"0");
+},0);
+
+var PRIO_COLOR={"High":C.err,"Medium":C.warn,"Low":C.info};
+var TYPE_ICON={"구매 통합":"🔗","장기 계약 전환":"📄","공급사 재협상":"🤝","대체 품목":"🔄","수요 패턴":"📊"};
+
+function App(){
+  var[tab,setTab]=useState("opportunities");
+  var tabs=[{id:"opportunities",label:"절감 기회 ("+OPPORTUNITIES.length+")"},{id:"anomalies",label:"이상 단가 ("+ANOMALIES.length+")"},{id:"pipeline",label:"실행 파이프라인"},{id:"summary",label:"요약"}];
+
+  return(
+  <div style={{width:"100%",height:"100%",background:"#E8ECF1",display:"flex",flexDirection:"column",fontFamily:"'Pretendard Variable',Pretendard,-apple-system,sans-serif",overflow:"hidden"}}>
+    <style>{`@import url('https://cdn.jsdelivr.net/gh/orioncactus/pretendard/dist/web/variable/pretendardvariable-dynamic-subset.css');*{box-sizing:border-box;margin:0;padding:0}::-webkit-scrollbar{width:5px}::-webkit-scrollbar-track{background:transparent}::-webkit-scrollbar-thumb{background:#E2E8F0;border-radius:3px}button{cursor:pointer;font-family:inherit}`}</style>
+
+    {/* Shell */}
+    <div style={{height:28,background:"#2D3748",display:"flex",alignItems:"center",padding:"0 14px",gap:6,flexShrink:0}}>
+      <div style={{display:"flex",gap:4}}><div style={{width:8,height:8,borderRadius:4,background:"#FC5C65"}}/><div style={{width:8,height:8,borderRadius:4,background:"#FED330"}}/><div style={{width:8,height:8,borderRadius:4,background:"#26DE81"}}/></div>
+      <span style={{color:"#A0AEC0",fontSize:10,fontWeight:500,marginLeft:8}}>AI Embedded BSM PRO — 비용 절감 인사이트</span>
+    </div>
+
+    {/* Card */}
+    <div style={{flex:1,display:"flex",alignItems:"center",justifyContent:"center",padding:12,overflow:"hidden"}}>
+    <div style={{width:"100%",maxWidth:1020,height:"100%",maxHeight:"85%",display:"flex",flexDirection:"column",borderRadius:C.r.xl,overflow:"hidden",boxShadow:"0 24px 80px rgba(0,0,0,.35)",background:C.white}}>
+
+      {/* Header */}
+      <div style={{padding:"10px 20px",background:"linear-gradient(135deg,#059669,#10B981)",display:"flex",alignItems:"center",justifyContent:"space-between",flexShrink:0}}>
+        <div style={{display:"flex",alignItems:"center",gap:10}}>
+          <div style={{width:32,height:32,borderRadius:8,background:"rgba(255,255,255,.15)",display:"flex",alignItems:"center",justifyContent:"center",fontSize:16}}>💡</div>
+          <div>
+            <div style={{display:"flex",alignItems:"center",gap:8}}>
+              <span style={{fontWeight:700,fontSize:16,color:"#FFF"}}>비용 절감 인사이트</span>
+              <span style={{fontSize:11,color:"rgba(255,255,255,.6)"}}>SCRL · T01+T05+T09+T10</span>
+            </div>
+            <div style={{fontSize:11,color:"rgba(255,255,255,.7)"}}>이상 단가 탐지 · 절감 기회 · 전략 제안 · 실행 파이프라인</div>
+          </div>
+        </div>
+        <div style={{display:"flex",alignItems:"center",gap:8}}>
+          <div style={{padding:"4px 12px",borderRadius:C.r.md,background:"rgba(255,255,255,.2)"}}>
+            <span style={{fontSize:14,fontWeight:700,color:"#FFF"}}>₩{(TOTAL_SAVING/10000).toFixed(1)}억</span>
+            <span style={{fontSize:10,color:"rgba(255,255,255,.7)",marginLeft:4}}>절감 가능</span>
+          </div>
+          <span style={{fontSize:10,fontWeight:600,padding:"3px 10px",borderRadius:C.r.full,color:"#FFF",background:"rgba(255,255,255,.2)"}}>PRO</span>
+        </div>
+      </div>
+
+      {/* Tabs */}
+      <div style={{display:"flex",gap:0,borderBottom:"1px solid "+C.bl,flexShrink:0}}>
+        {tabs.map(function(t){var ac=tab===t.id;return(
+          <button key={t.id} onClick={function(){setTab(t.id);}} style={{padding:"10px 18px",fontSize:13,fontWeight:ac?600:400,color:ac?"#059669":C.t3,background:"none",border:"none",borderBottom:ac?"2px solid #059669":"2px solid transparent"}}>{t.label}</button>
+        );})}
+      </div>
+
+      {/* Body */}
+      <div style={{flex:1,overflowY:"auto",padding:16}}>
+
+        {/* ── 절감 기회 ── */}
+        {tab==="opportunities"&&<div>
+          {/* §6.3 Price Risk Alert 퀵뷰 */}
+          <div style={{padding:10,borderRadius:C.r.md,background:"#FEF2F2",border:"1px solid #FCA5A5",marginBottom:12,display:"flex",justifyContent:"space-between",alignItems:"center"}}>
+            <div style={{display:"flex",alignItems:"center",gap:8}}>
+              <span style={{fontSize:12,fontWeight:700,color:"#991B1B"}}>Price Risk Alert</span>
+              <span style={{fontSize:11,color:"#991B1B"}}>{ANOMALIES.filter(function(a){return a.severity==="err";}).length+"건 긴급"}</span>
+            </div>
+            <button onClick={function(){setTab("anomalies");}} style={{padding:"4px 10px",borderRadius:C.r.md,border:"1px solid #FCA5A5",background:"transparent",fontSize:11,color:"#991B1B",fontWeight:600}}>상세 보기</button>
+          </div>
+
+          {OPPORTUNITIES.map(function(opp,i){
+            var pc=PRIO_COLOR[opp.priority]||C.info;
+            var icon=TYPE_ICON[opp.type]||"💰";
+            return(
+              <div key={i} style={{padding:14,borderRadius:C.r.md,background:C.bg,border:"1px solid "+C.bl,marginBottom:10}}>
+                <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:8}}>
+                  <div style={{display:"flex",alignItems:"center",gap:6}}>
+                    <span style={{fontSize:16}}>{icon}</span>
+                    <span style={{fontSize:15,fontWeight:700,color:C.t1}}>{opp.title}</span>
+                    <span style={{fontSize:10,fontWeight:600,padding:"2px 8px",borderRadius:9999,color:pc.fg,background:pc.bg}}>{opp.priority}</span>
+                    <span style={{fontSize:10,fontWeight:600,padding:"2px 8px",borderRadius:9999,color:"#5B21B6",background:"#F5F3FF"}}>{opp.type}</span>
+                    <span style={{fontSize:10,fontWeight:600,padding:"2px 8px",borderRadius:9999,color:C.t2,background:C.bg,border:"1px solid "+C.bl}}>{opp.status}</span>
+                  </div>
+                  <span style={{fontSize:18,fontWeight:700,color:"#22C55E"}}>{opp.saving}</span>
+                </div>
+
+                <div style={{fontSize:12,color:C.t2,lineHeight:1.6,marginBottom:8}}>{opp.desc}</div>
+
+                {/* Before → After */}
+                <div style={{display:"flex",gap:8,marginBottom:8}}>
+                  <div style={{flex:1,padding:"8px 10px",borderRadius:C.r.sm,background:"#FEF2F2",border:"1px solid #FCA5A5"}}>
+                    <div style={{fontSize:10,color:"#991B1B",fontWeight:600}}>현재</div>
+                    <div style={{fontSize:13,fontWeight:600,color:"#991B1B"}}>{opp.current}</div>
+                  </div>
+                  <div style={{display:"flex",alignItems:"center",fontSize:16,color:C.t3}}>→</div>
+                  <div style={{flex:1,padding:"8px 10px",borderRadius:C.r.sm,background:"#F0FDF4",border:"1px solid #86EFAC"}}>
+                    <div style={{fontSize:10,color:"#166534",fontWeight:600}}>목표</div>
+                    <div style={{fontSize:13,fontWeight:600,color:"#166534"}}>{opp.target}</div>
+                  </div>
+                </div>
+
+                <div style={{display:"flex",justifyContent:"space-between",alignItems:"center"}}>
+                  <div style={{display:"flex",gap:12,fontSize:11,color:C.t3}}>
+                    <span>{"난이도: "+opp.effort}</span>
+                    <span>{"소요: "+opp.timeline}</span>
+                    <span>{"엔진: "+opp.engine}</span>
+                    <span style={{fontSize:10,fontWeight:600,padding:"1px 6px",borderRadius:9999,color:"#1E40AF",background:"#EFF6FF"}}>{opp.signal}</span>
+                  </div>
+                  <div style={{fontSize:11,color:"#1E40AF",fontWeight:500}}>{opp.action}</div>
+                </div>
+              </div>
+            );
+          })}
+        </div>}
+
+        {/* ── 이상 단가 ── */}
+        {tab==="anomalies"&&<div>
+          <div style={{display:"flex",alignItems:"center",gap:6,marginBottom:12}}>
+            <span style={{fontSize:13,fontWeight:600,color:C.t1}}>이상 단가 탐지</span>
+            <span style={{fontSize:11,color:C.t3}}>SCRL §3.1 · T09+T10</span>
+          </div>
+
+          {ANOMALIES.map(function(a,i){
+            var sc=a.severity==="err"?C.err:a.severity==="warn"?C.warn:C.info;
+            return(
+              <div key={i} style={{padding:12,borderRadius:C.r.md,background:sc.bg,border:"1px solid "+sc.bd,marginBottom:8}}>
+                <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:6}}>
+                  <div style={{display:"flex",alignItems:"center",gap:8}}>
+                    <span style={{fontSize:13,fontWeight:600,color:sc.fg}}>{a.type}</span>
+                    <span style={{fontSize:10,fontWeight:600,padding:"2px 8px",borderRadius:9999,color:C.t2,background:C.bg}}>{a.cat}</span>
+                    <span style={{fontSize:10,fontWeight:600,padding:"1px 6px",borderRadius:9999,color:"#1E40AF",background:"#EFF6FF"}}>{a.signal}</span>
+                  </div>
+                  <span style={{fontSize:14,fontWeight:700,color:sc.fg}}>{a.impact}</span>
+                </div>
+                <div style={{fontSize:12,color:C.t1,marginBottom:4}}>{a.detail}</div>
+                <div style={{display:"flex",justifyContent:"space-between",fontSize:10,color:C.t3}}>
+                  <span>{"발생 "+a.count+"건"}</span>
+                  <span>{a.source}</span>
+                </div>
+              </div>
+            );
+          })}
+        </div>}
+
+        {/* ── 실행 파이프라인 ── */}
+        {tab==="pipeline"&&<div>
+          <div style={{fontSize:13,fontWeight:600,color:C.t1,marginBottom:12}}>절감 실행 파이프라인</div>
+
+          {["미착수","검토중","대기","실행중","완료"].map(function(stage){
+            var items=OPPORTUNITIES.filter(function(o){return o.status===stage;});
+            if(items.length===0)return null;
+            var sc=stage==="완료"?C.ok:stage==="실행중"?C.info:stage==="검토중"?C.warn:{bg:C.bg,fg:C.t2,ac:C.t3,bd:C.bl};
+            return(
+              <div key={stage} style={{marginBottom:14}}>
+                <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:6}}>
+                  <span style={{fontSize:13,fontWeight:600,color:sc.fg}}>{stage}</span>
+                  <span style={{fontSize:11,color:C.t3}}>{items.length}건</span>
+                  <span style={{fontSize:12,fontWeight:600,color:C.ok.fg}}>₩{items.reduce(function(s,o){return s+parseInt(o.saving.replace(/[^0-9]/g,"")||"0");},0).toLocaleString()}만</span>
+                </div>
+                {items.map(function(o,oi){return(
+                  <div key={oi} style={{display:"flex",alignItems:"center",gap:8,padding:"8px 12px",borderRadius:C.r.sm,background:sc.bg,border:"1px solid "+sc.bd,marginBottom:4}}>
+                    <span style={{fontSize:13}}>{TYPE_ICON[o.type]||"💰"}</span>
+                    <span style={{flex:1,fontSize:12,fontWeight:500,color:C.t1}}>{o.title}</span>
+                    <span style={{fontSize:10,fontWeight:600,padding:"2px 8px",borderRadius:9999,color:PRIO_COLOR[o.priority].fg,background:PRIO_COLOR[o.priority].bg}}>{o.priority}</span>
+                    <span style={{fontSize:12,fontWeight:600,color:"#22C55E"}}>{o.saving}</span>
+                    <span style={{fontSize:10,color:C.t3}}>{o.timeline}</span>
+                  </div>
+                );})}
+              </div>
+            );
+          })}
+        </div>}
+
+        {/* ── 요약 ── */}
+        {tab==="summary"&&<div>
+          {/* KPI */}
+          <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr 1fr",gap:10,marginBottom:16}}>
+            <div style={{padding:14,borderRadius:C.r.md,background:C.ok.bg,border:"1px solid "+C.ok.bd,textAlign:"center"}}>
+              <div style={{fontSize:22,fontWeight:700,color:C.ok.fg}}>₩{(TOTAL_SAVING/10000).toFixed(1)}억</div>
+              <div style={{fontSize:11,color:C.ok.fg}}>총 절감 가능액</div>
+            </div>
+            <div style={{padding:14,borderRadius:C.r.md,background:C.purple.bg,border:"1px solid "+C.purple.bd,textAlign:"center"}}>
+              <div style={{fontSize:22,fontWeight:700,color:C.purple.fg}}>{OPPORTUNITIES.length}건</div>
+              <div style={{fontSize:11,color:C.purple.fg}}>절감 기회</div>
+            </div>
+            <div style={{padding:14,borderRadius:C.r.md,background:C.warn.bg,border:"1px solid "+C.warn.bd,textAlign:"center"}}>
+              <div style={{fontSize:22,fontWeight:700,color:C.warn.fg}}>{ANOMALIES.length}건</div>
+              <div style={{fontSize:11,color:C.warn.fg}}>이상 단가</div>
+            </div>
+            <div style={{padding:14,borderRadius:C.r.md,background:C.info.bg,border:"1px solid "+C.info.bd,textAlign:"center"}}>
+              <div style={{fontSize:22,fontWeight:700,color:C.info.fg}}>{OPPORTUNITIES.filter(function(o){return o.priority==="High";}).length}건</div>
+              <div style={{fontSize:11,color:C.info.fg}}>High 우선순위</div>
+            </div>
+          </div>
+
+          {/* 절감 유형별 집계 */}
+          <div style={{fontSize:13,fontWeight:600,color:C.t1,marginBottom:8}}>절감 유형별 현황</div>
+          {["구매 통합","장기 계약 전환","공급사 재협상","대체 품목","수요 패턴"].map(function(type){
+            var items=OPPORTUNITIES.filter(function(o){return o.type===type;});
+            if(items.length===0)return null;
+            var total=items.reduce(function(s,o){return s+parseInt(o.saving.replace(/[^0-9]/g,"")||"0");},0);
+            return(
+              <div key={type} style={{display:"flex",alignItems:"center",gap:8,padding:"8px 12px",borderRadius:C.r.sm,background:C.bg,border:"1px solid "+C.bl,marginBottom:6}}>
+                <span style={{fontSize:14}}>{TYPE_ICON[type]}</span>
+                <span style={{flex:1,fontSize:13,fontWeight:500,color:C.t1}}>{type}</span>
+                <span style={{fontSize:11,color:C.t3}}>{items.length}건</span>
+                <span style={{fontSize:14,fontWeight:700,color:C.ok.fg}}>₩{total.toLocaleString()}만</span>
+              </div>
+            );
+          })}
+
+          {/* SCRL 로직 설명 */}
+          <div style={{padding:12,borderRadius:C.r.md,background:C.info.bg,border:"1px solid "+C.info.bd,marginTop:12}}>
+            <div style={{fontSize:12,fontWeight:600,color:C.info.fg,marginBottom:6}}>SCRL 분석 로직</div>
+            <div style={{fontSize:11,color:C.info.fg,lineHeight:1.8}}>
+              <div>{"1단계: 지출 정규화 — 공급사명 통합, 카테고리 정규화, 구매 방식 태깅"}</div>
+              <div>{"2단계: 다축 집계 — 부서별/품목별/공급사별/기간별"}</div>
+              <div>{"3단계: 편차 비교 — 전년/예산/시장가/기준단가 대비 (T09+T10)"}</div>
+              <div>{"4단계: 절감 기회 탐지 — 통합/계약전환/재협상/대체/수요패턴 (T01+T05)"}</div>
+              <div>{"5단계: 우선순위화 — 금액×난이도×시급성 기준"}</div>
+              <div>{"6단계: 경고 신호 — 집중도/급증/미조치 알림 생성"}</div>
+            </div>
+          </div>
+
+          <div style={{padding:10,borderRadius:C.r.md,background:C.purple.bg,border:"1px solid "+C.purple.bd,marginTop:8}}>
+            <div style={{fontSize:11,fontWeight:600,color:C.purple.fg}}>💡 핵심: SCRL은 "보여주기용 통계"가 아니라 "다음 구매 행동을 바꾸기 위한 전략 입력 화면"입니다.</div>
+          </div>
+        </div>}
+
+      </div>
+    </div>
+    </div>
+  </div>);
+}
+
+ReactDOM.createRoot(document.getElementById('root')).render(<App />);
+</script>
+</body>
+</html>

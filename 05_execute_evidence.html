@@ -1,0 +1,1616 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>BSM - 05 구매 실행 (Execute v4.0)</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { font-family: 'Pretendard Variable', Pretendard, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; }
+  #root { width: 100%; min-height: 100vh; }
+</style>
+</head>
+<body>
+<div id="root"></div>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.9/babel.min.js"></script>
+<script type="text/babel">
+const { useState, useRef, useEffect, useCallback, useMemo } = React;
+
+
+
+/* ═══════════════════════════════════════════════════════════════
+   AI-Embedded BSM LITE — 구매 실행 (담당자 화면)
+   bsm_lite_execute.jsx v4.0
+   Buying Journey 9단계 + Governance 내장 + 문서관리
+   역할: 조성호 과장 (구매담당자)
+   ─── Canonical Alignment ───
+   A-Series: Canonical A-Series Registry v1.0 (A01~A15 정본)
+   A-T Composition: Practical Composition Matrix v1.2
+   Activation: GuideType & A-Series Activation Matrix v2.0
+   T-Series: TSeries Canonical Engine Registry v3.0 (T01~T15)
+   State: 5-State (Freeze v1.1 §2.3) — READY → IN_PROGRESS → HRR → BLOCKED → COMPLETED
+   Screen: Screen-API Mapping v1.1 (6 Screens)
+   ─── v4.0 Changes (1/10/11/12 v9.2/v4.2 정합) ───
+   • GT Code Bridge: G01~G35 → journey type 변환 (gtCodeToJourneyType)
+   • BT 2-Layer: BT_META 11종 + prAllowed 차단 로직
+   • GT_ROUTE: 4-Route 인식 + 경로 A 완결 건 실행 차단
+   • Validated Package 수신: Screen 12 → Screen 2 핸드오프 인터페이스
+   • Audit Trail: logEvent() 9필드 + execution_event_log 스키마
+   • L3_MSG 참조: 품목별 메시지 연동 (SLA·위반코드)
+   Input:  Screen 12 validation → Validated Package { gtCode, route, reqCard, condProfile, attachments }
+   Output: Evidence Packet (§4.1~4.5 감사 증적)
+   역할: 조성호 과장 (구매담당자) / 코칭모드: 김형주 과장 (요청자 직접)
+   ═══════════════════════════════════════════════════════════════ */
+
+const T = {
+  state: {
+    ready:    { bg: "#F1F5F9", fg: "#475569", accent: "#64748B", border: "#CBD5E1" },
+    progress: { bg: "#EFF6FF", fg: "#1E40AF", accent: "#3B82F6", border: "#93C5FD" },
+    review:   { bg: "#FFFBEB", fg: "#92400E", accent: "#F59E0B", border: "#FCD34D" },
+    blocked:  { bg: "#FEF2F2", fg: "#991B1B", accent: "#EF4444", border: "#FCA5A5" },
+    complete: { bg: "#F0FDF4", fg: "#166534", accent: "#22C55E", border: "#86EFAC" },
+  },
+  brand: "#1E3A8A", brandLt: "#2563EB",
+  surface: "#FFFFFF", surfAlt: "#F8FAFC", panel: "#FAFBFC",
+  text: { primary: "#0F172A", secondary: "#475569", muted: "#64748B", inverse: "#FFFFFF" },
+  border: { light: "#E2E8F0", medium: "#CBD5E1", focus: "#3B82F6" },
+  radius: { sm: 6, md: 10, lg: 14, xl: 20, full: 9999 },
+  shadow: { sm: "0 1px 2px rgba(0,0,0,.05)", md: "0 4px 12px rgba(0,0,0,.08)", lg: "0 12px 40px rgba(0,0,0,.12)", xl: "0 20px 60px rgba(0,0,0,.2)", overlay: "0 24px 80px rgba(0,0,0,.35)" },
+  font: { sans: "'Pretendard Variable', Pretendard, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif" },
+};
+
+function Badge({ children, color, bg }) {
+  return <span style={{ display: "inline-block", fontSize: 11, fontWeight: 600, padding: "2px 8px", borderRadius: T.radius.full, color, background: bg, letterSpacing: -0.2 }}>{children}</span>;
+}
+
+/* ═══════════════════════════════════════════════════════════════
+   v4.0 Additions — Screen 1/10/11/12 정합 브릿지
+   ═══════════════════════════════════════════════════════════════ */
+
+// Intake Spec v3.0 §7.2: GT코드·Confidence% 사용자 비노출
+// 프로덕션 배포 시 false로 변경
+var DEV_MODE = true;
+
+/* ─── Audit Trail — execution_event_log (Append-Only) ───
+   DB Schema v1.1 §4.1.2 / Audit Trail Data Model v1.1
+   동일 스키마: Screen 1(explore) / 10(requirement) / 11(condition) / 12(validation) / 2(execute)
+   프로덕션: POST /evidence/log-execution API 연동
+   프로토타입: 콘솔 로그 + auditTrail 배열 누적 */
+var auditTrail = [];
+function logEvent(evt) {
+  var entry = {
+    event_id: crypto.randomUUID ? crypto.randomUUID() : ("evt-" + Date.now() + "-" + Math.random().toString(36).slice(2, 8)),
+    screen: evt.screen || "execute",
+    timestamp: new Date().toISOString(),
+    previous_state: evt.from || null,
+    new_state: evt.to || null,
+    trigger_source: evt.trigger || "user",
+    engine_code: evt.engine || "A05",
+    event_type: evt.type || "state_transition",
+    payload: evt.payload || null,
+  };
+  auditTrail.push(entry);
+  if (DEV_MODE) console.log("[AUDIT:execute]", entry.event_type, entry.engine_code, entry.previous_state, "→", entry.new_state, entry.payload ? JSON.stringify(entry.payload).slice(0, 80) : "");
+}
+
+/* ─── GT Code Bridge ───
+   G01~G35 (GuideType Library v1.2) → journey type (Screen 2 GT_ON key)
+   Screen 12 Validated Package의 gtCode를 Screen 2가 해석하는 변환 레이어
+   Master Index v3.0 §1.⑤: cat→G01~G05 | pr→G06~G10 | rfq→G11~G15 | con→G16~G20 | svc→G21~G25 | sub→G27 | urg→G31 | str→G34 | exc→G32/G35 */
+var GT_CODE_TO_JOURNEY = {
+  // Catalog (경로 A 완결 — Screen 2 미진입, cat miniFlow만 해당)
+  G01: "cat", G02: "cat", G03: "cat", G04: "cat", G05: "cat", G09: "cat", G10: "cat",
+  // PR (경로 C)
+  G06: "pr", G07: "pr", G08: "pr", G26: "pr",
+  // RFQ (경로 D)
+  G11: "rfq", G12: "rfq", G13: "rfq", G14: "rfq", G15: "rfq",
+  // Contract (경로 A/B)
+  G16: "con", G17: "con", G18: "con",
+  // Rental (경로 B — con 경유)
+  G19: "con",
+  // Subscription (경로 B)
+  G20: "sub", G27: "sub", G28: "sub",
+  // Service (경로 C/D)
+  G21: "svc", G22: "svc", G23: "svc", G24: "svc", G25: "svc", G29: "svc", G30: "svc",
+  // Emergency (경로 A — 예외)
+  G31: "urg",
+  // Special (경로 C)
+  G32: "exc", G35: "exc",
+  // Strategic (경로 D)
+  G33: "str", G34: "str",
+  // Contact (경로 A 완결 — Screen 2 미진입)
+  CONTACT: null,
+};
+
+function gtCodeToJourneyType(gtCode) {
+  return GT_CODE_TO_JOURNEY[gtCode] || "pr"; // fallback: 일반 PR
+}
+
+/* ─── BT 11종 (Primary Layer) ───
+   BuyingType Architecture Declaration v1.0
+   prAllowed=false → Screen 2 실행 차단 (주관부서 건은 Screen 1에서 완결)
+   Screen 1 explore.jsx의 BT_META와 동일 코드 체계 */
+var BT_META_REF = {
+  "BT-A": { code: "BT-A", name: "카탈로그 직접발주", icon: "🛒", prAllowed: false },
+  "BT-B": { code: "BT-B", name: "주관부서 카탈로그발주", icon: "🏢", prAllowed: false },
+  "BT-C": { code: "BT-C", name: "주관부서 계약발주", icon: "📋", prAllowed: false },
+  "BT-D": { code: "BT-D", name: "주관부서 경유소싱", icon: "🔍", prAllowed: false },
+  "BT-E": { code: "BT-E", name: "일반 경쟁견적", icon: "📊", prAllowed: true },
+  "BT-F": { code: "BT-F", name: "대형 경쟁입찰", icon: "🏗️", prAllowed: true },
+  "BT-G": { code: "BT-G", name: "수의계약", icon: "🤝", prAllowed: true },
+  "BT-H": { code: "BT-H", name: "장기 단가계약", icon: "📄", prAllowed: true },
+  "BT-I": { code: "BT-I", name: "프로젝트 발주", icon: "🚀", prAllowed: true },
+  "BT-J": { code: "BT-J", name: "구독·렌탈", icon: "🔄", prAllowed: "conditional" },
+  "BT-K": { code: "BT-K", name: "긴급 구매", icon: "🚨", prAllowed: true },
+};
+
+/* ─── GT Screen Routing (Intake Screen Routing Spec v1.0) ───
+   경로 A: Screen 1 완결 (Screen 2 미진입 — cat miniFlow 예외)
+   경로 B: Screen 1→10→12→2 (11 건너뜀)
+   경로 C: Screen 1→10→11→12→2
+   경로 D: Screen 1→10→11→12→2 (A02+A03 풀) */
+var GT_ROUTE = {
+  G01: "A", G02: "A", G03: "A", G04: "A", G05: "A", G09: "A", G10: "A", G16: "A", G31: "A", CONTACT: "A",
+  G17: "B", G18: "B", G19: "B", G20: "B",
+  G06: "C", G07: "C", G08: "C", G21: "C", G22: "C", G26: "C", G27: "C", G29: "C", G32: "C", G35: "C",
+  G11: "D", G12: "D", G13: "D", G14: "D", G15: "D", G23: "D", G24: "D", G25: "D", G28: "D", G30: "D", G33: "D", G34: "D",
+};
+
+/* ─── Screen-API Mapping v1.1 (6 Screens) ─── */
+var SCREEN_API = {
+  intake:     { screen: 1, api: "POST /runtime/start-execution",    state: "READY → IN_PROGRESS" },
+  suggestion: { screen: 2, api: "POST /runtime/evaluate-stability", state: "IN_PROGRESS → HRR / BLOCKED" },
+  decision:   { screen: 3, api: "POST /runtime/confirm-execution",  state: "IN_PROGRESS → COMPLETED" },
+  review:     { screen: 4, api: "POST /runtime/submit-human-decision", state: "HRR → IN_PROGRESS / BLOCKED" },
+  stop:       { screen: 5, api: "POST /governance/resolve-stop",    state: "BLOCKED → IN_PROGRESS" },
+  result:     { screen: 6, api: "POST /evidence/log-execution",     state: "COMPLETED 유지" },
+};
+
+/* ─── Validated Package 수신 인터페이스 ───
+   Screen 12(validation) → Screen 2(execute) 핸드오프
+   프로덕션: URL 파라미터 또는 상태관리(Redux/Zustand)로 전달
+   프로토타입: parseValidatedPackage()로 mock 데이터 해석 */
+function parseValidatedPackage(pkg) {
+  if (!pkg || !pkg.gtCode) return null;
+  var journeyType = gtCodeToJourneyType(pkg.gtCode);
+  var route = GT_ROUTE[pkg.gtCode] || "C";
+
+  // 경로 A 완결 건 차단 (G31 긴급은 예외)
+  if (route === "A" && pkg.gtCode !== "G31" && journeyType !== "cat") {
+    if (DEV_MODE) console.warn("[EXECUTE] Route A item blocked:", pkg.gtCode, "— should complete in Screen 1");
+    return null;
+  }
+
+  // BT prAllowed 차단
+  if (pkg.btCode && BT_META_REF[pkg.btCode]) {
+    var bt = BT_META_REF[pkg.btCode];
+    if (bt.prAllowed === false && pkg.btCode !== "BT-A") {
+      if (DEV_MODE) console.warn("[EXECUTE] BT prAllowed=false blocked:", pkg.btCode, "— dept_request item");
+      return null;
+    }
+  }
+
+  logEvent({
+    screen: "execute", from: "VALIDATED", to: "IN_PROGRESS", trigger: "system",
+    engine: "A05", type: "handoff_receive",
+    payload: { gtCode: pkg.gtCode, btCode: pkg.btCode || null, route: route, journeyType: journeyType }
+  });
+
+  return {
+    journeyType: journeyType,
+    gtCode: pkg.gtCode,
+    btCode: pkg.btCode || null,
+    route: route,
+    reqCard: pkg.reqCard || null,
+    condProfile: pkg.condProfile || null,
+    attachments: pkg.attachments || [],
+    confidence: pkg.confidence || null,
+    category: pkg.category || null,
+    contract: pkg.contract || null,
+    l3Code: pkg.l3Code || null,
+  };
+}
+
+/* ─── GT 35종 참조 (GuideType Library v1.2 정본) ───
+   Screen 2에서는 journey type으로 변환 후 사용하므로,
+   DEV_MODE 표시용으로만 참조 */
+var GT_LABEL = {
+  G01:"카탈로그 주문", G02:"내부 카탈로그", G03:"계약 카탈로그", G04:"장기계약 카탈로그", G05:"VMI 카탈로그",
+  G06:"일반 구매요청", G07:"예산 통제 구매", G08:"부서 요청", G09:"반복 구매", G10:"소액 구매",
+  G11:"일반 경쟁 견적", G12:"제한 경쟁 견적", G13:"전략 품목 경쟁", G14:"역경매", G15:"다단계 견적",
+  G16:"기존 계약 발주", G17:"장기 계약 발주", G18:"서비스 계약 발주", G19:"렌탈/리스 신청", G20:"구독 신청",
+  G21:"일반 서비스", G22:"유지보수 서비스", G23:"시설관리 서비스", G24:"전문 서비스", G25:"프로젝트 서비스",
+  G26:"소프트웨어 구매", G27:"SaaS 구독", G28:"클라우드 서비스", G29:"IT 유지보수", G30:"디지털 서비스",
+  G31:"긴급 구매", G32:"단일 공급사", G33:"자산 취득 구매", G34:"전략 구매", G35:"특별 승인 구매",
+};
+
+const V={g:100,y:60,r:20};
+function calcSup(s){
+  const rc=[s.fin,s.del,s.qual,s.esg].filter(x=>x==="r").length;
+  return{...s,risk:rc===0?"낮음":rc===1?"보통":"높음",sc:Math.round((V[s.fin]*30+V[s.del]*25+V[s.qual]*30+V[s.esg]*15)/100)};
+}
+
+const MASTER_STEPS = [
+  { id:"a05", agent:"A05", label:"공급사 리스크 스캔", color:"#7C3AED",
+    ai:{str:"AI 공급사 분석 결과, 해당 분야 적합 업체 5곳이 조회되었어요.\n\n삼성SDS는 거래 이력 3건으로 납기 안정성이 높게 나타났어요. LG CNS, SK C&C도 이력이 확인돼요. 나머지 2곳은 기술력 기준으로 매칭되었어요.\n\n이 5곳으로 제안 요청을 진행하시겠어요?",
+      rfq:"AI 공급사 분석 결과, 서버 장비 전문 업체 3곳이 조회되었어요.\n\n대한IT솔루션은 거래 이력 5건, 평균 납기 2주로 안정성이 높아요. 미래정보시스템도 2건 이력이 확인돼요. 글로벌테크는 신규이지만 가격대가 낮은 편이에요.\n\n이 3곳에 견적 요청을 진행하시겠어요?",
+      svc:"AI 공급사 분석 결과, 서비스 가능 업체 3곳이 조회되었어요.\n\n클린파트너스는 거래 이력 4건으로 서비스 품질 평가가 양호해요. 그린케어, 한국FM도 이력이 확인돼요.\n\n이 3곳에 서비스 제안을 요청하시겠어요?",
+      pr:"AI 공급사 분석 결과, 기존 거래 업체 2곳이 확인되었어요.\n\n한국사무기기는 거래 이력 8건, 평균 납기 1.5주로 가장 안정적이에요. 스마트오피스도 이력이 있어요.\n\n이 2곳으로 진행하시겠어요?",
+      con:"AI 공급사 재점검 결과, 기존 계약 공급사의 현재 상태를 확인했어요.\n\n재무안정성·납기·품질·ESG 4항목을 점검했어요. 오른쪽에서 변동 사항을 확인해 주세요.\n\n문제없으면 비용 점검으로 넘어갈게요.",
+      urg:"AI 긴급 업체 조회 결과, 1곳이 확인되었어요.\n\n세이프티코리아가 재고 보유 중이라 즉시 출고 가능해요. 긴급 출고라 시장가 대비 10~15% 높을 수 있어요.\n\n바로 진행하시겠어요?",
+      exc:"지정 공급사 정보가 확인되었어요.\n\nOEM 지정업체로 단일 공급 사유가 등록되어 있어요. 오른쪽 패널에서 상세 정보를 확인해 주세요.\n\n이 업체로 진행하시겠어요?",
+      cat:"카탈로그 등록 품목으로 확인되었어요.\n\n별도 업체 탐색 없이 바로 주문하실 수 있어요.\n\n카탈로그로 이동하시겠어요?",
+      _:"공급사 분석 결과, 적합 업체가 조회되었어요.\n\n오른쪽 패널에서 상세 정보를 확인해 주세요.\n\n이 업체들로 진행하시겠어요?"},
+    detail:"",
+    wait:null, dur:"즉시",
+    panel:{
+      str:{title:"공급사 탐색 결과",sections:[
+        {label:"품목군",type:"info",data:"IT 인프라 · 클라우드"},
+        {label:"과거 거래 이력",type:"history",data:[{n:"삼성SDS",v:"3건 · 평균 ₩1.8억 · 납기 2.1주"},{n:"LG CNS",v:"2건 · 평균 ₩1.7억 · 납기 2.5주"},{n:"SK C&C",v:"1건 · 평균 ₩2.0억 · 납기 3주 · 이슈 1건"}]},
+        {label:"시장 참고가",type:"info",data:"IT인프라: ₩1.8억~₩2.5억"},
+        {label:"공급사 Pool",type:"info",data:"등록 12곳 중 5곳 적합"}]},
+      rfq:{title:"공급사 탐색 결과",sections:[
+        {label:"품목군",type:"info",data:"IT/서버 장비"},
+        {label:"과거 거래 이력",type:"history",data:[{n:"대한IT솔루션",v:"5건 · 평균 ₩4,100만 · 납기 2주"},{n:"미래정보시스템",v:"2건 · 평균 ₩4,300만 · 납기 2.5주"}]},
+        {label:"시장 참고가",type:"info",data:"서버장비: ₩3,800만~₩5,200만"},
+        {label:"공급사 Pool",type:"info",data:"등록 8곳 중 3곳 적합"}]},
+      svc:{title:"공급사 탐색 결과",sections:[
+        {label:"품목군",type:"info",data:"시설관리 서비스"},
+        {label:"과거 거래 이력",type:"history",data:[{n:"클린파트너스",v:"4건 · 평균 ₩260만/월"}]},
+        {label:"시장 참고가",type:"info",data:"시설관리: ₩250만~₩380만/월"},
+        {label:"공급사 Pool",type:"info",data:"등록 6곳 중 3곳 적합"}]},
+      pr:{title:"공급사 탐색 결과",sections:[
+        {label:"품목군",type:"info",data:"IT 장비 · 노트북"},
+        {label:"과거 거래 이력",type:"history",data:[{n:"한국사무기기",v:"8건 · 평균 ₩162만 · 납기 1.5주"}]},
+        {label:"시장 참고가",type:"info",data:"노트북: ₩150만~₩200만"},
+        {label:"공급사 Pool",type:"info",data:"등록 5곳 중 2곳 적합"}]},
+      con:{title:"공급사 리스크 재점검 (갱신)",sections:[
+        {label:"기존 계약 공급사",type:"info",data:"코웨이 — 정수기·공기청정기 렌탈"},
+        {label:"리스크 변동 점검",type:"check",data:[{label:"재무안정성: 변동 없음 (A등급 유지)",ok:true},{label:"납기 준수율: 98% (양호)",ok:true},{label:"품질 이슈: 0건",ok:true},{label:"ESG: 변동 없음",ok:true}]},
+        {label:"갱신 이력",type:"alert",data:"연속 갱신 2회차 — 3회 이상 시 재입찰 의무"}]},
+      urg:{title:"긴급 공급사",sections:[{label:"시장 참고가",type:"info",data:"긴급 출고가: 정가 +10~15%"},{label:"공급사 Pool",type:"info",data:"즉시출고 가능 3곳 중 1곳"}]},
+      exc:{title:"지정 공급사",sections:[{label:"공급사 Pool",type:"info",data:"단일 공급사 — 시장가 비교 불가"}]},
+      cat:{title:"카탈로그",sections:[{label:"상태",type:"info",data:"등록 품목 · 별도 승인 불필요"}]}
+    },
+    actions:{str:["이 업체들로 진행","업체 추가 요청","특정 업체 제외"],rfq:["이 업체들로 진행","업체 추가 요청","특정 업체 제외"],svc:["이 업체들로 진행","업체 추가 요청","특정 업체 제외"],pr:["이 업체들로 진행","업체 추가 요청"],con:["공급사 확인 완료","공급사 변경 검토"],urg:["이 업체로 진행"],exc:["이 업체로 진행","사유 보완 필요"],cat:["카탈로그로 이동"],_:["이 업체들로 진행"]},
+    suppliers:{
+      str:[{n:"삼성SDS",d:"IT 인프라·클라우드",fin:"g",del:"g",qual:"g",esg:"g"},{n:"LG CNS",d:"SI·클라우드",fin:"g",del:"g",qual:"g",esg:"y"},{n:"SK C&C",d:"IT 서비스",fin:"g",del:"y",qual:"g",esg:"g"},{n:"현대오토에버",d:"IT 인프라",fin:"y",del:"g",qual:"y",esg:"g"},{n:"NHN클라우드",d:"클라우드 전문",fin:"y",del:"y",qual:"g",esg:"g"}],
+      rfq:{server:[{n:"대한IT솔루션",d:"서버·네트워크",fin:"g",del:"g",qual:"g",esg:"g"},{n:"미래정보시스템",d:"IT 인프라 통합",fin:"g",del:"g",qual:"y",esg:"g"},{n:"글로벌테크",d:"서버·스토리지",fin:"y",del:"g",qual:"y",esg:"y"}],
+        furniture:[{n:"퍼시스",d:"사무가구 전문",fin:"g",del:"g",qual:"g",esg:"g"},{n:"시디즈",d:"의자·데스크",fin:"g",del:"g",qual:"g",esg:"y"},{n:"한샘오피스",d:"사무공간 종합",fin:"g",del:"y",qual:"y",esg:"g"}],
+        general:[{n:"코리아오피스",d:"사무용품 종합",fin:"g",del:"g",qual:"g",esg:"g"},{n:"오피스디포",d:"문구·소모품",fin:"g",del:"g",qual:"y",esg:"g"},{n:"위메프비즈",d:"기업 구매 플랫폼",fin:"y",del:"g",qual:"g",esg:"y"}],
+        _:[{n:"대한IT솔루션",d:"서버·네트워크",fin:"g",del:"g",qual:"g",esg:"g"},{n:"미래정보시스템",d:"IT 인프라 통합",fin:"g",del:"g",qual:"y",esg:"g"},{n:"글로벌테크",d:"서버·스토리지",fin:"y",del:"g",qual:"y",esg:"y"}]},
+      svc:[{n:"클린파트너스",d:"시설관리 전문",fin:"g",del:"g",qual:"g",esg:"g"},{n:"그린케어",d:"청소·환경",fin:"g",del:"g",qual:"y",esg:"g"},{n:"한국FM",d:"통합 시설관리",fin:"y",del:"g",qual:"g",esg:"y"}],
+      pr:[{n:"한국사무기기",d:"노트북·주변기기",fin:"g",del:"g",qual:"g",esg:"g"},{n:"스마트오피스",d:"IT 장비 종합",fin:"g",del:"y",qual:"g",esg:"g"}],
+      con:[{n:"코웨이",d:"정수기·공기청정기 (기존 계약)",fin:"g",del:"g",qual:"g",esg:"g"}],
+      urg:[{n:"세이프티코리아",d:"안전장비 전문",fin:"g",del:"g",qual:"g",esg:"g"}],
+      exc:[{n:"OEM 지정업체",d:"단일 공급사",fin:"y",del:"g",qual:"y",esg:"y"}]}},
+  { id:"a06", agent:"A06", label:"경쟁 구조 정렬", color:"#D97706",
+    ai:{str:"AI 견적 분석 결과, 제안요청서(RFP) 초안이 구성되었어요.\n\n이전 클라우드 프로젝트 이력을 참조해서 기술 60%, 가격 40% 기준으로 정리했어요. 오른쪽에서 평가 기준과 필수 요구사항을 확인해 주세요.\n\n이대로 5곳에 발송하시겠어요?",
+      rfq:"AI 견적 분석 결과, 견적 요청서(RFQ) 초안이 구성되었어요.\n\n사양서 기반으로 서버 장비 1대, Xeon·64GB·2TB, 납기 2주 조건이에요. 이전 구매 이력에서 보증 2년 조건을 참조해서 동일하게 넣었어요.\n\n3곳에 발송하시겠어요?",
+      svc:"AI 견적 분석 결과, 서비스 제안 요청서 초안이 구성되었어요.\n\n시설관리 12개월, 청소·보안·설비 통합 조건이에요. SLA 기준도 포함되어 있어요.\n\n3곳에 발송하시겠어요?",
+      _:"견적 요청서 초안이 구성되었어요.\n\n오른쪽 패널에서 요청 내용을 확인해 주세요.\n\n이대로 발송하시겠어요?"},
+    detail:"",
+    preview:{str:{item:"IT 인프라 구축 프로젝트",qty:"1식",spec:"클라우드 + 온프레미스 하이브리드",date:"3개월 내",targets:"삼성SDS, LG CNS, SK C&C, 현대오토에버, NHN클라우드",type:"RFP"},rfq:{item:"서버 장비",qty:"1대",spec:"Xeon / 64GB / 2TB RAID",date:"2주 내",targets:"대한IT솔루션, 미래정보시스템, 글로벌테크",type:"RFQ"},svc:{item:"시설관리 서비스",qty:"12개월",spec:"청소 · 보안 · 설비 통합",date:"5월 시작",targets:"클린파트너스, 그린케어, 한국FM",type:"서비스 제안"}},
+    panel:{
+      str:{title:"제안 요청 기준",sections:[
+        {label:"평가 기준 (가중치)",type:"check",data:[{label:"기술 평가 60%",ok:true},{label:"가격 평가 40%",ok:true}]},
+        {label:"이전 유사 프로젝트",type:"history",data:[{n:"2024 클라우드 전환",v:"RFP · 5곳 · 3개월"}]},
+        {label:"필수 요구사항",type:"check",data:[{label:"기술/가격 분리 평가",ok:true},{label:"SLA 조건 포함",ok:true},{label:"하자보증 2년",ok:true}]}]},
+      rfq:{title:"견적 요청 기준",sections:[
+        {label:"평가 기준 (가중치)",type:"check",data:[{label:"가격 40%",ok:true},{label:"기술 30%",ok:true},{label:"납기 30%",ok:true}]},
+        {label:"이전 서버 구매 조건",type:"history",data:[{n:"2023 서버 구매",v:"납기 3주 · 보증 2년"}]},
+        {label:"필수 요구사항",type:"check",data:[{label:"사양 일치 확인",ok:true},{label:"보증 2년 이상",ok:true}]}]},
+      svc:{title:"서비스 제안 기준",sections:[
+        {label:"평가 기준",type:"check",data:[{label:"서비스 품질 40%",ok:true},{label:"가격 35%",ok:true},{label:"SLA 이행 25%",ok:true}]},
+        {label:"필수 요구사항",type:"check",data:[{label:"SLA 명시",ok:true},{label:"계약 기간 12개월",ok:true}]}]}
+    },
+    actions:{str:["확인하고 발송","평가 기준 수정","요청 조건 변경"],rfq:["확인하고 발송","평가 기준 수정","요청 조건 변경"],svc:["확인하고 발송","평가 기준 수정","요청 조건 변경"],_:["확인하고 발송","요청 조건 변경"]},
+    wait:{msg:{str:"5곳에 RFP를 발송했어요.\n제안서가 오면 알려드릴게요.\n\n⚠️ 마감일 전까지 개별 견적은 봉인됩니다.",rfq:"3곳에 견적 요청을 보냈어요.\n견적이 도착하면 알려드릴게요.\n\n⚠️ 마감일 전까지 개별 견적은 봉인됩니다.",svc:"3곳에 서비스 제안 요청을 보냈어요.\n\n⚠️ 마감일 전까지 개별 제안은 봉인됩니다.",_:"견적 요청을 보냈어요.\n\n⚠️ 마감일 전까지 봉인됩니다."},dur:{str:"예상 2~3주 (마감일까지 봉인)",rfq:"예상 3~5일 (마감일까지 봉인)",svc:"예상 5~7일 (마감일까지 봉인)",_:"예상 3~7일 (마감일까지 봉인)"},notify:{str:"5곳 중 4곳이 제안서를 제출했어요! (1곳 미응답)\n\n🔒 견적 봉인 상태 — 마감일 도래 시 개봉됩니다.",rfq:"견적 3곳 중 2곳이 도착했어요! (1곳 미응답)\n\n🔒 견적 봉인 상태 — 마감일 도래 시 개봉됩니다.",svc:"서비스 제안서 3곳 중 2곳이 왔어요! (1곳 미응답)\n\n🔒 제안 봉인 상태 — 마감일 도래 시 개봉됩니다.",_:"견적이 도착했어요!\n\n🔒 봉인 상태 — 마감일 도래 시 개봉됩니다."}},
+    dur:"3~14일", suppliers:null},
+  { id:"a07", agent:"A07", label:"비용 안정성 점검", color:"#059669",
+    ai:{str:"AI 비용 분석 결과, 5곳 중 4곳 제안서 비용과 기술을 비교했어요.\n⚠️ 1곳(NHN클라우드) 미응답 — 마감일 초과 2일\n✅ 경쟁 충분성: 4곳 응답으로 충족\n\n분석 결과 삼성SDS가 TCO 기준으로 가장 높게 평가되었고, 기술 점수도 92점으로 1위에요. LG CNS는 단가가 낮지만 기술 85점이에요. 오른쪽에서 상세 비교를 확인해 주세요.\n\n미응답 업체를 먼저 처리하시겠어요, 아니면 응답 업체로 진행하시겠어요?",
+      rfq:"AI 비용 분석 결과, 3곳 중 2곳 견적이 비교되었어요.\n⚠️ 1곳(글로벌테크) 미응답 — 마감일 초과 3일\n✅ 경쟁 충분성: 2곳 응답 — ⚠️ 3곳 미만으로 경쟁 불충분 가능\n\n대한IT솔루션이 4,200만원으로 가장 낮고, 시장 평균(₩3,800만~₩5,200만) 범위 내에 있어요. 이전 구매(평균 ₩4,100만) 대비 2.4% 상승이에요.\n\n미응답 업체 처리를 먼저 권장합니다. 독촉 또는 마감 연장 후 3곳 비교가 가능해요.",
+      pr:"AI 비용 분석 결과, 과거 구매 이력 기준으로 단가를 확인했어요.\n\n노트북 1대당 약 160만원으로, 이전 평균(₩162만)과 유사한 수준이에요. 시장가 범위 안에 있어요.\n\n이 가격으로 진행하시겠어요?",
+      con:"AI 비용 분석 결과, 계약 갱신 분석 결과, 현재 조건을 확인했어요.\n\n월 54만원 × 12대로 동일 조건 갱신이 가능해요. 지난 12개월 공급사 성과도 양호하고, 시장가 대비 적정한 수준이에요.\n\n이대로 갱신하시겠어요?",
+      sub:"AI 구독 조건 확인 결과, 기존 조건 유지가 가능해요.\n\n이대로 갱신하시겠어요?",
+      svc:"AI 비용 분석 결과, 3곳 중 2곳 서비스 제안이 비교되었어요.\n⚠️ 1곳(한국FM) 미응답 — 마감일 초과 2일\n✅ 경쟁 충분성: 2곳 응답 — ⚠️ 3곳 미만\n\n클린파트너스가 월 280만원으로 분석 결과 가성비가 높게 나타났어요. 이전 계약(₩260만/월) 대비 소폭 상승이지만 서비스 범위가 넓어졌어요.\n\n미응답 업체 처리를 먼저 진행하시겠어요?",
+      urg:"AI 긴급 비용 점검 결과를 확인했어요.\n\n긴급 출고가가 시장가 대비 +12% 수준이에요. 긴급 할증 허용 범위(+15%) 안에 있어요.\n\n⚠️ +15% 초과 시 사후 보고서에 가격 적정성 사유가 추가로 필요합니다.\n\n이 가격으로 진행하시겠어요?",
+      _:"비용 분석 결과가 정리되었어요.\n\n오른쪽 패널에서 상세 내용을 확인해 주세요.\n\n이대로 진행하시겠어요?"},
+    detail:"",
+    wait:null, dur:"즉시",
+    actions:{str:["이대로 선정 진행","가격 재협상 요청","재견적 요청"],rfq:["이대로 선정 진행","가격 재협상 요청","사양 재확인","미응답 업체 처리","재견적 요청"],svc:["이대로 선정 진행","가격 재협상 요청","재견적 요청"],pr:["이 가격으로 진행","가격 재확인"],con:["이 조건으로 갱신","조건 변경 요청"],sub:["이 조건으로 갱신","조건 변경 요청"],urg:["이 가격으로 긴급 진행","가격 재확인"],_:["확인하고 진행"]},
+    panel:{
+      rfq:{title:"비용 분석 참조",sections:[
+        {label:"견적 수신 현황",type:"check",data:[{label:"대한IT솔루션 — 수신",ok:true},{label:"미래정보시스템 — 수신",ok:true},{label:"글로벌테크 — 수신",ok:true}]},
+        {label:"경쟁 충분성",type:"info",data:"3곳 전원 응답 — 경쟁 충분 ✓"},
+        {label:"기술 적합성 확인",type:"history",data:[{n:"대한IT솔루션",v:"사양 100% 일치"},{n:"미래정보시스템",v:"사양 100% 일치"},{n:"글로벌테크",v:"RAM 32GB 제안 — 사양 미달"}]},
+        {label:"과거 단가 추이",type:"history",data:[{n:"2023 서버 구매",v:"평균 ₩4,100만"},{n:"2022 서버 구매",v:"평균 ₩3,850만"}]},
+        {label:"시장 평균",type:"info",data:"서버장비: ₩3,800만~₩5,200만"},
+        {label:"이상단가 기준",type:"check",data:[{label:"시장가 +15% = 주의",ok:true},{label:"시장가 +30% = 경고",ok:true},{label:"이전 대비 +20% = 주의",ok:true}]}]},
+      str:{title:"TCO 분석 참조",sections:[
+        {label:"제안 수신 현황",type:"check",data:[{label:"삼성SDS — 수신",ok:true},{label:"LG CNS — 수신",ok:true},{label:"SK C&C — 수신",ok:true},{label:"현대오토에버 — 수신",ok:true},{label:"NHN클라우드 — 수신",ok:true}]},
+        {label:"경쟁 충분성",type:"info",data:"5곳 전원 응답 — 경쟁 충분 ✓"},
+        {label:"기술 평가 결과",type:"history",data:[{n:"삼성SDS",v:"92점 (기술 1위)"},{n:"SK C&C",v:"88점"},{n:"LG CNS",v:"85점"}]},
+        {label:"비용 구조",type:"check",data:[{label:"도입 비용 (하드웨어/SW)",ok:true},{label:"운영 비용 (유지보수/라이선스)",ok:true},{label:"전환 비용 (마이그레이션)",ok:true}]},
+        {label:"시장 참고가",type:"info",data:"IT인프라: ₩1.8억~₩2.5억"},
+        {label:"이상단가 기준",type:"check",data:[{label:"TCO 편차 15% = 주의",ok:true},{label:"숨은 비용(Config Fee 등) 탐지",ok:true}]}]},
+      svc:{title:"서비스 비용 참조",sections:[
+        {label:"제안 수신 현황",type:"check",data:[{label:"클린파트너스 — 수신",ok:true},{label:"그린케어 — 수신",ok:true},{label:"한국FM — 수신",ok:true}]},
+        {label:"경쟁 충분성",type:"info",data:"3곳 전원 응답 — 경쟁 충분 ✓"},
+        {label:"이전 서비스 비용",type:"history",data:[{n:"클린파트너스",v:"₩260만/월 (2024)"}]},
+        {label:"시장 평균",type:"info",data:"시설관리: ₩250만~₩380만/월"}]},
+      pr:{title:"단가 참조",sections:[
+        {label:"과거 구매 단가",type:"history",data:[{n:"2023 노트북",v:"₩163만 (Dell)"},{n:"2022 노트북",v:"₩170만 (HP)"}]},
+        {label:"시장 평균",type:"info",data:"노트북: ₩150만~₩200만"}]},
+      con:{title:"계약 갱신 분석",sections:[
+        {label:"현재 계약",type:"info",data:"월 ₩54만 × 12대 · 만료 4/15"},
+        {label:"공급사 성과 (지난 12개월)",type:"check",data:[{label:"납기 준수율 98%",ok:true},{label:"품질 이슈 0건",ok:true},{label:"클레임 0건",ok:true},{label:"SLA 충족",ok:true}]},
+        {label:"시장 가격 변동",type:"info",data:"동종 장비 시장가 변동 -3% — 현 계약가 적정"},
+        {label:"갱신 판단",type:"check",data:[{label:"연속 갱신 2회차 (3회 이상 시 재입찰 권장)",ok:true},{label:"공급사 성과 양호",ok:true},{label:"가격 적정",ok:true}]}]},
+      sub:{title:"구독 조건 참조",sections:[{label:"현재 구독",type:"info",data:"기존 조건 유지 가능"}]},
+      urg:{title:"긴급 건 비용 점검",sections:[
+        {label:"긴급 출고가",type:"info",data:"시장가 대비 +12% (허용 범위 +15% 이내)"},
+        {label:"시장 참고가",type:"info",data:"안전장비: ₩50만~₩80만"},
+        {label:"이상단가 기준",type:"check",data:[{label:"시장가 +15% = 주의 ← 12%로 범위 내",ok:true},{label:"시장가 +30% = 경고",ok:true}]},
+        {label:"사후 보고 의무",type:"alert",data:"긴급 할증 수용 시 사후 보고서에 가격 적정성 산출 필수"}]}
+    },
+    quotes:{
+      rfq:[{n:"대한IT솔루션",price:"4,200만원",delivery:"2주",note:"시장가 대비 -5%",best:true},{n:"미래정보시스템",price:"4,500만원",delivery:"3주",note:"시장가 수준"},{n:"글로벌테크",price:"4,800만원",delivery:"2주",note:"시장가 대비 +7%"}],
+      str:[{n:"삼성SDS",price:"2.1억",delivery:"3개월",note:"TCO 최적",best:true},{n:"LG CNS",price:"1.9억",delivery:"4개월",note:"가격 최저"},{n:"SK C&C",price:"2.3억",delivery:"3개월",note:"기술 최고점"}],
+      svc:[{n:"클린파트너스",price:"280만/월",delivery:"5월",note:"가성비 최적",best:true},{n:"그린케어",price:"310만/월",delivery:"5월",note:"범위 넓음"},{n:"한국FM",price:"350만/월",delivery:"6월",note:"통합 관리"}]}},
+  { id:"a09", agent:"A09", label:"경쟁 평가/선정", color:"#2563EB",
+    ai:{str:"AI 종합 평가 결과, 5곳 종합 평가가 완료되었어요.\n\n분석 결과 삼성SDS가 88점으로 1위로 나타났어요. TCO와 기술 점수가 모두 높게 평가되었어요. 2위 LG CNS(84점)와 4점 차이에요.\n\n이 업체로 선정하시겠어요? 다른 업체를 검토하시려면 말씀해 주세요.",
+      rfq:"AI 종합 평가 결과, 3곳 종합 평가가 완료되었어요.\n\n대한IT솔루션이 89점으로 1위로 나타났어요. 가격이 가장 낮고 납기 2주로 가장 빨라요. 거래 이력 5건에서 이슈가 없었어요. 2위 미래정보(83점)와 6점 차이에요.\n\n이 업체로 선정하시겠어요?",
+      svc:"AI 종합 평가 결과, 3곳 종합 평가가 완료되었어요.\n\n클린파트너스가 88점으로 1위로 나타났어요. 가성비가 높고 거래 이력 4건으로 안정적이에요. 2위 그린케어(85점)와 3점 차이에요.\n\n이 업체로 선정하시겠어요?",
+      _:"종합 평가 결과가 정리되었어요.\n\n오른쪽 패널에서 평가 결과를 확인해 주세요.\n\n추천 업체로 선정하시겠어요?"},
+    detail:"",
+    actions:{str:["선정 확정","차순위로 변경","재입찰 요청"],rfq:["선정 확정","차순위로 변경","재입찰 요청"],svc:["선정 확정","차순위로 변경","재입찰 요청"],_:["선정 확정"]},
+    selection:{
+      str:{winner:"삼성SDS",scores:[{k:"가격",w:35,v:82},{k:"납기",w:20,v:90},{k:"리스크",w:25,v:95},{k:"기술",w:15,v:92},{k:"ESG",w:5,v:88}],total:88,runner:"LG CNS",runnerTotal:84,reason:"TCO 최적 + 기술 최고점 + 리스크 최저"},
+      rfq:{winner:"대한IT솔루션",scores:[{k:"가격",w:35,v:95},{k:"납기",w:20,v:85},{k:"리스크",w:25,v:90},{k:"기술",w:15,v:80},{k:"ESG",w:5,v:85}],total:89,runner:"미래정보시스템",runnerTotal:83,reason:"가격 최저 + 납기 최단 + 리스크 낮음"},
+      svc:{winner:"클린파트너스",scores:[{k:"가격",w:35,v:90},{k:"납기",w:20,v:88},{k:"리스크",w:25,v:92},{k:"기술",w:15,v:85},{k:"ESG",w:5,v:80}],total:88,runner:"그린케어",runnerTotal:85,reason:"가성비 최적 + 서비스 품질 1위"}},
+    wait:null, dur:"즉시", suppliers:null,
+    panel:{
+      str:{title:"선정 평가 기준",sections:[
+        {label:"평가 가중치",type:"check",data:[{label:"가격 35%",ok:true},{label:"납기 20%",ok:true},{label:"리스크 25%",ok:true},{label:"기술 15%",ok:true},{label:"ESG 5%",ok:true}]},
+        {label:"경쟁 충분성",type:"info",data:"5곳 제안 수신 — 경쟁 충분"},
+        {label:"선정 사유 (감사용)",type:"info",data:"TCO 최적 + 기술 최고점 + 리스크 최저. 2위 대비 4점 우위."}]},
+      rfq:{title:"선정 평가 기준",sections:[
+        {label:"평가 가중치",type:"check",data:[{label:"가격 35%",ok:true},{label:"납기 20%",ok:true},{label:"리스크 25%",ok:true},{label:"기술 15%",ok:true},{label:"ESG 5%",ok:true}]},
+        {label:"경쟁 충분성",type:"info",data:"3곳 견적 수신 — 경쟁 충분"},
+        {label:"선정 사유 (감사용)",type:"info",data:"가격 최저 + 납기 최단 + 리스크 낮음. 2위 대비 6점 우위."}]},
+      svc:{title:"선정 평가 기준",sections:[
+        {label:"평가 가중치",type:"check",data:[{label:"가격 35%",ok:true},{label:"납기 20%",ok:true},{label:"리스크 25%",ok:true},{label:"기술 15%",ok:true},{label:"ESG 5%",ok:true}]},
+        {label:"경쟁 충분성",type:"info",data:"3곳 제안 수신 — 경쟁 충분"},
+        {label:"선정 사유 (감사용)",type:"info",data:"가성비 최적 + 서비스 품질 1위. 2위 대비 3점 우위."}]}
+    }},
+  { id:"a08", agent:"A08", label:"정책 준수 확인", color:"#DC2626",
+    ai:{str:"AI 정책·윤리 점검 결과, ₩2.1억 기준 경영진 승인이 필요한 것으로 확인되었어요.\n\nISO 27001, 환경 정책은 적합 판정이에요. 다만 공급사 DEI 인증과 ESG 공급망 실사가 미확인 상태여서 보완이 필요해요.\n\n오른쪽에서 정책 체크 결과를 확인해 주세요.",
+      rfq:"AI 정책·윤리 점검 결과, ₩4,200만 기준 부서장 승인이 필요한 것으로 확인되었어요.\n\n⚠️ 경쟁 충분성 점검: 3곳 중 글로벌테크가 사양 미달로 실질 2곳만 유효해요. 3사 견적 정책에 미달할 수 있어요.\n\n이해충돌·반부패 항목은 통과했어요. 오른쪽에서 상세 결과를 확인해 주세요.",
+      pr:"AI 정책·윤리 점검 결과, 총액 ₩800만(160만×5대) 기준 부서장 승인이 필요해요.\n\n⚠️ 대당 160만이지만 총액이 500만을 초과하여 팀장이 아닌 부서장 승인 경로로 변경되었어요.\n분할 발주 점검: 최근 30일 동일 품목 발주 없음 ✓\n\n승인 요청을 진행하시겠어요?",
+      con:"AI 정책·윤리 점검 결과, 계약 갱신은 팀장 승인으로 진행 가능해요.\n\n⚠️ 연속 갱신 2회차입니다. 다음 갱신(3회차)부터는 재입찰 검토가 의무예요.\n이해충돌·ESG 변동 확인 완료.\n\n진행하시겠어요?",
+      sub:"AI 정책·윤리 점검 결과, 구독 갱신은 IT팀장 승인으로 진행 가능해요.\n\n데이터 처리 규정 준수, 약관 변경 없음 확인. 사용률 72%로 적정 수준이에요.\n\n진행하시겠어요?",
+      svc:"AI 정책·윤리 점검 결과, 서비스 구매는 부서장 승인으로 진행 가능해요.\n\n이해충돌·반부패·ESG 항목 모두 통과. 경쟁 충분성(3곳) 확인 완료.\n\nSLA 조건이 계약에 명시되어 있는지 확인해 주세요.\n\n진행하시겠어요?",
+      urg:"AI 긴급 정책·윤리 점검 결과, 즉시 승인 처리가 가능해요.\n\n이해충돌 확인 완료. 긴급 사유 정당성 인정.\n⚠️ 비용 점검에서 시장가 대비 +12%로 확인되었어요 (허용 +15% 이내).\n다만 사후 보고서를 3일 내 제출해야 해요. 미제출 시 Stop Code가 발생합니다.\n\n바로 진행하시겠어요?",
+      exc:"AI 정책·윤리 점검 결과, 특별 승인 위원회 심의가 필요한 것으로 확인되었어요.\n\n⚠️ 이해충돌(COI) 확인 미완료 + 독점 사유 정당성 검증 필요.\n수의계약 사유서와 COI 서약서가 필수이고, 경쟁 부재 사유가 명확히 기록되어야 해요.\n\n사유서를 확인하시고 진행하시겠어요?",
+      _:"정책 적합성 분석 결과가 정리되었어요.\n\n오른쪽에서 정책 체크 결과를 확인해 주세요.\n\n진행하시겠어요?"},
+    detail:"",
+    wait:null, dur:"즉시", suppliers:null,
+    panel:{
+      str:{title:"정책·윤리 적합성 체크",sections:[
+        {label:"정책 체크 결과",type:"check",data:[{label:"IT Security (ISO 27001)",ok:true},{label:"환경 정책 (ISO 14001)",ok:true},{label:"DEI 인증",ok:false},{label:"재무 안정성",ok:true}]},
+        {label:"T14 윤리·컴플라이언스",type:"check",data:[{label:"이해충돌(COI) 서약",ok:true},{label:"반부패 조항 준수",ok:true},{label:"ESG 공급망 실사",ok:false}]},
+        {label:"승인 경로",type:"info",data:"₩2.1억 기준 → CFO → CEO 결재"},
+        {label:"금액별 승인 기준",type:"check",data:[{label:"~5천만: 부서장",ok:true},{label:"5천만~2억: 경영진",ok:true},{label:"2억 이상: CFO+CEO ← 해당",ok:true}]},
+        {label:"Stop Code 확인",type:"alert",data:"HOLD — DEI 인증 + ESG 공급망 실사 미확인 → 보완 필요"}]},
+      rfq:{title:"정책·윤리 적합성 체크",sections:[
+        {label:"정책 체크 결과",type:"check",data:[{label:"공급사 인증",ok:true},{label:"가격 적정성",ok:true},{label:"납품 조건",ok:true}]},
+        {label:"T14 윤리·컴플라이언스",type:"check",data:[{label:"이해충돌(COI) 확인",ok:true},{label:"반부패 조항 준수",ok:true},{label:"ESG 기준 충족",ok:true}]},
+        {label:"승인 경로",type:"info",data:"₩4,200만 기준 → 부서장 승인 1단계"},
+        {label:"⚠️ 경쟁 충분성",type:"alert",data:"3곳 중 1곳(글로벌테크) 사양 미달 제외 시 2곳만 유효 — 3사 견적 정책 미달 가능"},
+        {label:"금액별 승인 기준",type:"check",data:[{label:"~500만: 팀장",ok:true},{label:"500만~5천만: 부서장 ← 해당",ok:true},{label:"5천만~2억: 경영진",ok:true},{label:"2억 이상: CFO+CEO",ok:true}]}]},
+      svc:{title:"정책·윤리 적합성 체크",sections:[
+        {label:"정책 체크 결과",type:"check",data:[{label:"서비스 품질 기준",ok:true},{label:"SLA 조건 명시",ok:true},{label:"가격 적정성",ok:true}]},
+        {label:"T14 윤리·컴플라이언스",type:"check",data:[{label:"이해충돌(COI) 확인",ok:true},{label:"반부패 조항 준수",ok:true},{label:"ESG 기준 충족",ok:true}]},
+        {label:"승인 경로",type:"info",data:"서비스 금액 기준 → 부서장 승인"},
+        {label:"경쟁 충분성",type:"info",data:"3곳 제안 수신 — 경쟁 충분 ✓"}]},
+      pr:{title:"정책·윤리 적합성 체크",sections:[
+        {label:"정책 체크 결과",type:"check",data:[{label:"품목 승인",ok:true},{label:"예산 범위",ok:true}]},
+        {label:"T14 윤리·컴플라이언스",type:"check",data:[{label:"이해충돌(COI) 확인",ok:true},{label:"반부패 조항 준수",ok:true}]},
+        {label:"분할 발주 점검",type:"check",data:[{label:"최근 30일 동일 품목 발주 이력: 없음",ok:true}]},
+        {label:"승인 경로",type:"info",data:"₩160만(대당) × 5대 = ₩800만 → 부서장 승인 필요"},
+        {label:"⚠️ 금액 기준 상향",type:"alert",data:"대당 160만이지만 총액 800만 → 팀장 아닌 부서장 승인 필요"}]},
+      con:{title:"갱신 정책·윤리 체크",sections:[
+        {label:"갱신 조건",type:"check",data:[{label:"금액 변동 없음",ok:true},{label:"기존 계약 준수",ok:true}]},
+        {label:"T14 윤리·컴플라이언스",type:"check",data:[{label:"이해충돌(COI) 확인",ok:true},{label:"공급사 ESG 변동",ok:true}]},
+        {label:"⚠️ 연속 갱신 점검",type:"alert",data:"연속 갱신 2회차 — 3회 이상 시 재입찰 의무 (감사 핵심 지적사항)"},
+        {label:"승인 경로",type:"info",data:"간소화 절차 — 팀장 승인"}]},
+      sub:{title:"구독 갱신·윤리 체크",sections:[
+        {label:"갱신 조건",type:"check",data:[{label:"기존 조건 유지",ok:true},{label:"예산 범위 내",ok:true}]},
+        {label:"T14 윤리·컴플라이언스",type:"check",data:[{label:"데이터 처리 규정 준수",ok:true},{label:"약관 변경 여부",ok:true}]},
+        {label:"사용률 점검",type:"check",data:[{label:"라이선스 사용률 72% — 적정",ok:true}]},
+        {label:"승인 경로",type:"info",data:"IT팀장 승인"}]},
+      urg:{title:"긴급 구매 정책·윤리 체크",sections:[
+        {label:"긴급 사유",type:"info",data:"즉시 승인 처리"},
+        {label:"T14 윤리·컴플라이언스",type:"check",data:[{label:"긴급 사유 정당성",ok:true},{label:"이해충돌(COI) 확인",ok:true}]},
+        {label:"⚠️ 비용 점검",type:"alert",data:"시장가 대비 +10~15% 추정 — 긴급 할증 수용 범위 내"},
+        {label:"사후 의무",type:"alert",data:"사후 보고서 3일 내 제출 필수 — 미제출 시 Stop Code 발생"},
+        {label:"보고서 필수 항목",type:"check",data:[{label:"긴급 사유 상세",ok:false},{label:"대안 검토 여부",ok:false},{label:"시장가 대비 초과분 산출",ok:false},{label:"향후 재발 방지 대책",ok:false}]}]},
+      exc:{title:"특별 승인 정책·윤리 체크",sections:[
+        {label:"수의계약 사유서",type:"alert",data:"경쟁 부재 사유서 필수 — 감사 최다 지적 항목"},
+        {label:"T14 윤리·컴플라이언스",type:"check",data:[{label:"이해충돌(COI) 확인",ok:false},{label:"반부패 조항 준수",ok:true},{label:"독점 사유 정당성",ok:false}]},
+        {label:"사유서 필수 항목",type:"check",data:[{label:"① 경쟁 불가 사유 (기술독점/특허 등)",ok:false},{label:"② 대안 업체 조사 결과",ok:false},{label:"③ 단가 적정성 증빙 (시장가 대비)",ok:false},{label:"④ 향후 경쟁 전환 계획",ok:false}]},
+        {label:"승인 경로",type:"info",data:"사유서 → 구매팀장 → 위원회 심의"},
+        {label:"필수 첨부",type:"check",data:[{label:"수의계약 사유서",ok:false},{label:"시장 조사 결과",ok:true},{label:"단가 적정성 증빙",ok:false},{label:"COI 서약서",ok:false}]}]}
+    },
+    actions:{str:["정책 적합 확인 후 진행","예외 승인 요청","중단"],rfq:["정책 확인 후 진행","경쟁 불충분 사유서","수정 필요"],svc:["정책 확인 후 진행","수정 필요"],pr:["승인 요청 진행","수정 필요"],con:["갱신 진행","조건 변경"],sub:["갱신 진행","조건 변경"],urg:["긴급 진행","중단"],exc:["사유서 확인 후 진행","사유 보완 필요","중단"],_:["확인하고 진행","수정 필요"]}},
+  { id:"a13", agent:"A13", label:"의사결정 안정성 검증", color:"#6D28D9",
+    ai:{str:"AI 최종 안전 점검 결과, 최종 안전 점검이 완료되었어요.\n\n정책 적합성, 비용 적정성, 공급사 리스크를 종합 확인한 결과, 리스크 수용 여부 확인이 필요해요.\n\n오른쪽에서 GO/HOLD/STOP 판정 결과를 확인해 주세요.",
+      rfq:"AI 최종 안전 점검 결과, 전 항목이 통과되었어요.\n\n3곳 경쟁 견적, 정책 적합, 비용 적정 — 모두 양호해요.\n\n최종 확인 후 계약 단계로 진행하시겠어요?",
+      svc:"AI 최종 안전 점검 결과, 전 항목이 통과되었어요.\n\n서비스 제안 평가, 정책 확인, 예산 확인 — 모두 양호해요.\n\n계약 단계로 진행하시겠어요?",
+      pr:"AI 최종 안전 점검 결과, 이상 없는 것으로 확인되었어요.\n\n정책 적합, 예산 범위 내 — 모두 양호해요.\n\n승인 단계로 진행하시겠어요?",
+      urg:"긴급 건 안전 점검 결과가 나왔어요.\n\n즉시 승인 처리가 가능하지만, 사후 보고 의무가 있어요.\n\n확인 후 발주를 진행하시겠어요?",
+      exc:"특별 건 안전 점검 결과가 나왔어요.\n\n수의계약 사유서와 첨부 서류 검증 결과, 미완성 항목이 있으면 HOLD 처리돼요.\n\n확인 후 위원회에 상정하시겠어요?",
+      _:"실행 안정성 검증 결과가 정리되었어요.\n\n오른쪽에서 GO/HOLD/STOP 결과를 확인해 주세요.\n\n진행하시겠어요?"},
+    detail:"",
+    wait:null, dur:"즉시", suppliers:null,
+    panel:{
+      str:{title:"GO / HOLD / STOP 판정",sections:[
+        {label:"종합 판정",type:"info",data:"HOLD — 리스크 수용 확인 필요"},
+        {label:"항목별 체크",type:"check",data:[{label:"정책 적합성",ok:true},{label:"비용 적정성",ok:true},{label:"공급사 리스크",ok:false},{label:"계약 조건 합의",ok:true},{label:"예산 확보",ok:true},{label:"경쟁 충분성",ok:true}]},
+        {label:"HOLD 사유",type:"alert",data:"신규 거래처 리스크 — IT Security 규정 업데이트 확인 후 GO 전환 가능"}]},
+      rfq:{title:"GO / HOLD / STOP 판정",sections:[
+        {label:"종합 판정",type:"info",data:"GO — 전 항목 통과"},
+        {label:"항목별 체크",type:"check",data:[{label:"정책 적합성",ok:true},{label:"비용 적정성",ok:true},{label:"공급사 리스크",ok:true},{label:"경쟁 충분성 (3곳)",ok:true},{label:"예산 범위",ok:true}]}]},
+      svc:{title:"GO / HOLD / STOP 판정",sections:[
+        {label:"종합 판정",type:"info",data:"GO — 전 항목 통과"},
+        {label:"항목별 체크",type:"check",data:[{label:"정책 적합성",ok:true},{label:"비용 적정성",ok:true},{label:"SLA 명시",ok:true},{label:"경쟁 충분성 (3곳)",ok:true}]}]},
+      pr:{title:"GO / HOLD / STOP 판정",sections:[
+        {label:"종합 판정",type:"info",data:"GO — 정상 진행"},
+        {label:"항목별 체크",type:"check",data:[{label:"정책 적합",ok:true},{label:"예산 범위",ok:true},{label:"공급사 이력",ok:true}]}]},
+      urg:{title:"GO / HOLD / STOP 판정",sections:[
+        {label:"종합 판정",type:"info",data:"GO (긴급) — 즉시 진행, 사후 보고 필수"},
+        {label:"항목별 체크",type:"check",data:[{label:"긴급 사유 확인",ok:true},{label:"공급사 재고 확인",ok:true}]},
+        {label:"사후 의무",type:"alert",data:"사후 보고서 3일 내 제출 필수"}]},
+      exc:{title:"GO / HOLD / STOP 판정",sections:[
+        {label:"종합 판정",type:"info",data:"HOLD — 사유서 완성 필요"},
+        {label:"사유서 체크",type:"check",data:[{label:"경쟁 불가 사유",ok:true},{label:"대안 업체 조사",ok:false},{label:"단가 적정성",ok:false},{label:"경쟁 전환 계획",ok:false}]},
+        {label:"HOLD 사유",type:"alert",data:"사유서 4항목 중 3항목 미완성 — 보완 후 GO 전환"}]}
+    },
+    actions:{str:["GO 확인 — 진행","HOLD — 보완 후 재확인","STOP — 중단"],rfq:["GO 확인 — 진행"],svc:["GO 확인 — 진행"],pr:["GO 확인 — 진행"],urg:["GO 확인 — 긴급 진행"],exc:["HOLD — 사유 보완 후 재확인","STOP — 중단"],_:["GO 확인 — 진행","HOLD — 보완 필요","STOP — 중단"]}},
+  { id:"a12", agent:"A12", label:"예산 안정성 확인", color:"#B45309",
+    ai:{str:"AI 예산 영향도 분석 결과, 이번 건의 예산 영향이 산출되었어요.\n\n연간 IT 예산 6억 중 2.1억(35%)이 사용돼요. 기집행 1.2억 포함 시 잔여 예산이 2.7억(45%)이에요.\n\n하반기 운영에 영향이 있을 수 있어요. 오른쪽에서 상세를 확인해 주세요.",
+      _:"예산 확인 결과, 예산 범위 내에서 진행 가능한 것으로 나타났어요.\n\n오른쪽에서 상세를 확인해 주세요.\n\n이대로 진행하시겠어요?"},
+    detail:"",
+    wait:null, dur:"즉시", suppliers:null,
+    panel:{
+      str:{title:"예산 영향도 분석",sections:[
+        {label:"예산 현황",type:"history",data:[{n:"연간 IT 예산",v:"₩6억"},{n:"기집행액",v:"₩1.2억 (20%)"},{n:"이번 건",v:"₩2.1억 (35%)"},{n:"잔여 예산",v:"₩2.7억 (45%)"}]},
+        {label:"영향도 판단",type:"alert",data:"하반기 예산 45% 잔여 — 운영비 확보 여부 확인 필요"},
+        {label:"이전 유사 건",type:"history",data:[{n:"2024 인프라 구축",v:"₩1.8억 집행 · 예산 내"}]}]},
+      rfq:{title:"예산 확인",sections:[
+        {label:"예산 현황",type:"history",data:[{n:"부서 예산",v:"₩2억"},{n:"기집행",v:"₩8,000만 (40%)"},{n:"이번 건",v:"₩4,200만 (21%)"},{n:"잔여",v:"₩7,800만 (39%)"}]},
+        {label:"판단",type:"info",data:"예산 범위 내 — 정상 진행 가능"}]},
+      svc:{title:"예산 확인",sections:[
+        {label:"예산 현황",type:"history",data:[{n:"연간 시설관리 예산",v:"₩4,000만"},{n:"이번 건 (연간)",v:"₩3,360만 (84%)"},{n:"잔여",v:"₩640만 (16%)"}]},
+        {label:"판단",type:"alert",data:"예산 84% 사용 — 추가 지출 여력 제한적"}]}
+    },
+    actions:{str:["예산 확인 후 진행","예산 조정 요청","중단"],rfq:["예산 확인 후 진행","예산 조정 요청"],svc:["예산 확인 후 진행","예산 조정 요청"],_:["확인하고 진행"]}},
+  { id:"a10", agent:"A10", label:"계약 구조 설계", color:"#0891B2",
+    ai:{str:"AI 계약 검토 결과, 계약서 초안이 구성되었어요.\n\n6개 주요 조항 점검 결과, 면책 한도와 해지 조건에서 확인이 필요한 항목이 발견되었어요. 오른쪽에서 조항별 상태를 확인해 주세요.\n\n확인 후 업체에 전달하시겠어요?",
+      rfq:"AI 계약 검토 결과, 계약서 초안이 구성되었어요.\n\n납품 조건, 하자보증 2년, 지급 조건이 포함되어 있어요. 조항 점검 결과 이슈 없는 것으로 확인되었어요.\n\n업체에 전달하시겠어요?",
+      svc:"AI 서비스 계약 검토 결과, 계약서 초안이 구성되었어요.\n\n서비스 범위, SLA, 계약 기간 12개월이 포함되어 있어요. SLA 위반 시 패널티 조건도 명시되어 있어요.\n\n업체에 전달하시겠어요?",
+      con:"AI 갱신 계약 검토 결과, 갱신 계약서가 구성되었어요.\n\n기존 조건 유지, 갱신 기간 12개월이에요. 변경 사항 없는 것으로 확인되었어요.\n\n업체에 발송하시겠어요?",
+      _:"계약 검증 결과, 계약서 초안이 구성되었어요.\n\n오른쪽에서 주요 조항을 확인해 주세요.\n\n업체에 전달하시겠어요?"},
+    detail:"",
+    panel:{
+      str:{title:"계약 조항 체크리스트",sections:[
+        {label:"조항별 상태",type:"check",data:[{label:"공급 범위 (Scope of Supply)",ok:true},{label:"납품 일정 (Delivery Schedule)",ok:true},{label:"지급 조건 (Payment Terms)",ok:true},{label:"보증 조건 (Warranty)",ok:true},{label:"면책/배상 (Liability & Indemnity)",ok:false},{label:"해지 조건 (Termination)",ok:false}]},
+        {label:"리스크 경고",type:"alert",data:"면책 한도 불명확 · 해지 조건 불균형 — 법무 검토 권장"},
+        {label:"이전 계약 참조",type:"history",data:[{n:"2024 삼성SDS",v:"SLA 99.5% · 하자보증 2년 · 단계 지급"}]}]},
+      rfq:{title:"계약 조항 체크리스트",sections:[
+        {label:"조항별 상태",type:"check",data:[{label:"납품 조건",ok:true},{label:"하자보증 2년",ok:true},{label:"지급 조건 (납품 후 30일)",ok:true},{label:"품질 기준",ok:true}]},
+        {label:"상태",type:"info",data:"전 조항 Draft Ready — 이슈 없음"}]},
+      svc:{title:"서비스 계약 체크리스트",sections:[
+        {label:"조항별 상태",type:"check",data:[{label:"서비스 범위",ok:true},{label:"SLA 기준",ok:true},{label:"계약 기간 12개월",ok:true},{label:"패널티 조건",ok:true},{label:"갱신 조건",ok:true}]},
+        {label:"상태",type:"info",data:"전 조항 Draft Ready — 이슈 없음"}]},
+      con:{title:"갱신 계약 체크",sections:[
+        {label:"변경 사항",type:"info",data:"없음 — 기존 조건 유지"},
+        {label:"갱신 기간",type:"info",data:"12개월 자동 갱신"}]}
+    },
+    actions:{str:["계약서 발송","조항 수정 요청","법무 검토 요청"],rfq:["계약서 발송","조항 수정 요청"],svc:["계약서 발송","조항 수정 요청"],con:["갱신 계약 발송","조건 변경 요청"],_:["계약서 발송","수정 필요"]},
+    wait:{msg:{str:"계약서를 업체에 전달했어요.\n법무 검토 후 회신이 오면 알려드릴게요.",rfq:"계약서를 업체에 전달했어요.\n검토 후 회신이 오면 알려드릴게요.",svc:"서비스 계약서를 업체에 전달했어요.",con:"갱신 계약서를 업체에 발송했어요.",_:"계약서를 업체에 전달했어요."},dur:{str:"예상 1~2주",rfq:"예상 2~3일",svc:"예상 3~5일",con:"예상 2~3일",_:"예상 3~5일"},notify:{str:"업체가 계약 조건에 합의했어요!",rfq:"업체가 계약에 동의했어요!",svc:"서비스 계약에 동의했어요!",con:"계약 갱신이 완료되었어요!",_:"계약 합의 완료!"}},
+    dur:"3~14일"},
+  { id:"a11", agent:"A11", label:"승인 흐름 실행", color:"#16A34A",
+    ai:{str:"승인 요청 준비가 완료되었어요.\n\n삼성SDS와 ₩2.1억 계약 건이에요. 승인 경로는 CFO → CEO 순서에요. 신규 거래처 Risk Signal이 1건 확인되었으니 참고해 주세요.\n\n승인 요청을 진행하시겠어요?",
+      rfq:"승인 요청 준비가 완료되었어요.\n\n대한IT솔루션과 ₩4,200만원 계약 건이에요. 3곳 경쟁 견적 기반으로 선정되었고, 시장가 대비 5% 절감이에요.\n\n승인 요청을 진행하시겠어요?",
+      pr:"승인 요청 준비가 완료되었어요.\n\n한국사무기기에서 ₩160만원 구매 건이에요. 거래 이력 8건으로 안정성이 확인된 업체예요.\n\n바로 진행하시겠어요?",
+      urg:"긴급 발주 준비가 완료되었어요.\n\n세이프티코리아에 즉시 출고 요청 건이에요. 사후 보고서는 3일 내 제출 의무가 있어요.\n\n발주를 진행하시겠어요?",
+      exc:"특별 승인 상정 준비가 완료되었어요.\n\n수의계약 사유서와 단가 적정성 증빙이 첨부되어 있어요. 심의 결과가 나오면 안내해 드릴게요.\n\n위원회에 상정하시겠어요?",
+      _:"승인 요청 준비가 완료되었어요.\n\n오른쪽에서 승인 전 체크 결과를 확인해 주세요.\n\n진행하시겠어요?"},
+    detail:"",
+    panel:{
+      str:{title:"승인 전 최종 확인",sections:[
+        {label:"계약 요약",type:"history",data:[{n:"공급사",v:"삼성SDS"},{n:"계약 금액",v:"₩2.1억"},{n:"TCO 조정",v:"-₩1,600만 (Config Fee/Rebate)"},{n:"절감율",v:"7.9%"}]},
+        {label:"승인 전 체크",type:"check",data:[{label:"정책 적합",ok:true},{label:"비용 적정",ok:true},{label:"계약 조건 합의",ok:true},{label:"리스크 수용",ok:false}]},
+        {label:"Savings Summary",type:"info",data:"시장가 대비 ₩4,000만 절감 · TCO 조정 ₩1,600만 · 종합 절감율 7.9%"},
+        {label:"Risk Signal",type:"alert",data:"신규 거래처 · IT Security 규정 업데이트 확인 필요"}]},
+      rfq:{title:"승인 전 최종 확인",sections:[
+        {label:"계약 요약",type:"history",data:[{n:"공급사",v:"대한IT솔루션"},{n:"계약 금액",v:"₩4,200만"},{n:"시장가 대비",v:"-5% (절감 ₩200만)"}]},
+        {label:"승인 전 체크",type:"check",data:[{label:"3곳 경쟁 견적",ok:true},{label:"정책 적합",ok:true},{label:"비용 적정",ok:true},{label:"계약 합의",ok:true}]},
+        {label:"Savings",type:"info",data:"이번 건 절감액: ₩200만 (시장가 대비)"}]},
+      pr:{title:"승인 전 확인",sections:[
+        {label:"구매 요약",type:"history",data:[{n:"공급사",v:"한국사무기기"},{n:"금액",v:"₩160만"},{n:"거래 이력",v:"8건 · 이슈 없음"}]},
+        {label:"승인 체크",type:"check",data:[{label:"예산 범위",ok:true},{label:"정책 적합",ok:true}]},
+        {label:"Savings",type:"info",data:"이전 평균(₩162만) 대비 ₩2만 절감 (1.2%)"}]},
+      urg:{title:"긴급 발주 확인",sections:[
+        {label:"발주 요약",type:"history",data:[{n:"공급사",v:"세이프티코리아"},{n:"출고",v:"즉시"}]},
+        {label:"Savings",type:"alert",data:"긴급 출고 할증 +10~15% — 절감 해당 없음"},
+        {label:"사후 의무",type:"alert",data:"사후 보고서 3일 내 제출 필수"}]},
+      exc:{title:"특별 승인 확인",sections:[
+        {label:"수의계약 요약",type:"history",data:[{n:"공급사",v:"OEM 지정업체"},{n:"사유",v:"단일 공급 사유"}]},
+        {label:"첨부 서류",type:"check",data:[{label:"수의계약 사유서",ok:true},{label:"단가 적정성 증빙",ok:true},{label:"시장 조사 결과",ok:true}]},
+        {label:"Savings",type:"alert",data:"수의계약 — 경쟁 비교 불가 · 단가 적정성으로 대체 증빙"}]},
+      svc:{title:"승인 전 확인",sections:[
+        {label:"계약 요약",type:"history",data:[{n:"공급사",v:"클린파트너스"},{n:"계약 금액",v:"₩280만/월"},{n:"계약 기간",v:"12개월"}]},
+        {label:"승인 체크",type:"check",data:[{label:"3곳 경쟁 제안",ok:true},{label:"정책 적합",ok:true},{label:"SLA 명시",ok:true}]},
+        {label:"Savings",type:"info",data:"시장 평균(₩315만/월) 대비 ₩35만/월 절감 · 연간 ₩420만"}]}
+    },
+    actions:{str:["승인 요청 진행","수정 후 재요청"],rfq:["승인 요청 진행","수정 후 재요청"],pr:["승인 요청 진행","수정 필요"],urg:["긴급 발주 진행","중단"],exc:["위원회 상정","사유 보완 필요"],_:["승인 요청 진행","수정 필요"]},
+    wait:{msg:{str:"경영진 결재를 올렸어요.\n승인되면 알려드릴게요.",rfq:"승인 요청을 올렸어요.\n완료되면 알려드릴게요.",pr:"팀장님께 요청했어요.\n승인되면 바로 알려드릴게요.",urg:"긴급 발주를 넣었어요.\n출고되면 알려드릴게요.",exc:"위원회 심의를 요청했어요.",_:"승인 요청을 올렸어요."},dur:{str:"예상 5~7일",rfq:"예상 1~2일",pr:"예상 당일~1일",urg:"예상 당일",exc:"예상 3~5일",_:"예상 1~3일"},notify:{str:"CEO 승인 완료! 계약 체결합니다.",rfq:"부서장 승인 완료! 발주합니다.",pr:"팀장 승인 완료! 발주합니다.",urg:"출고 완료! 오늘 도착 예정.",exc:"특별 승인 완료!",_:"승인 완료!"}},
+    dur:"1~7일"},
+];
+
+const GT_ON = {
+  // Aligned: GuideType & A-Series Activation Matrix v2.0
+  // A01~A04: Navigation/Intake phase (handled by explore.jsx)
+  // A05~A13: Execution Buying Journey phase (this JSX)
+  str:{name:"전략적 구매",on:["a05","a06","a07","a09","a08","a13","a12","a10","a11"]},
+    // Matrix §8: Required A06,A07,A08,A09,A12 + Conditional A11,A14 + A05(Invocation Matrix)
+  rfq:{name:"업체 비교 구매",on:["a05","a06","a07","a09","a08","a13","a10","a11"],subs:{server:"서버·IT장비",furniture:"가구·인테리어",vehicle:"차량·리스",lab:"연구장비·계측"}},
+    // Matrix §7: Required A05,A08,A09,A10 + Conditional A07,A11
+  svc:{name:"서비스 구매",on:["a05","a06","a07","a09","a08","a13","a10","a11"],subs:{clean:"청소·시설관리",security:"보안경비",consulting:"전문용역·컨설팅"}},
+    // Matrix §7 variant: service-specific RFQ path
+  pr:{name:"구매요청서",on:["a05","a07","a08","a10","a11"]},
+    // Matrix §6: Required A05,A10 + Conditional A06,A07 → A08 added for policy check
+  con:{name:"계약 갱신",on:["a05","a07","a08","a10","a11"]},
+    // PG-05: A05 추가 — 갱신 시에도 공급사 리스크 재점검 (재무/ESG 변동)
+  sub:{name:"구독 갱신",on:["a07","a08","a11"]},
+    // Subscription: Cost check + Policy + Approval
+  urg:{name:"긴급 구매",on:["a05","a07","a08","a13","a11"]},
+    // PG: A07 추가 — 긴급이라도 시장가 대비 점검 필요 (설계서 §9.2.2)
+  exc:{name:"특별 승인",on:["a05","a08","a13","a10","a11"]},
+    // Matrix §9: Required A06→A08(policy),A13,A10 + Conditional A11,A07
+  cat:{name:"카탈로그",on:["a05"],
+    // 카탈로그 미니 플로우 (5단계: 검색→장바구니→예산코드→자동승인→주문확인)
+    miniFlow:[
+      {id:"cat1",label:"품목 검색",ai:"카탈로그에서 품목을 검색합니다.\n등록된 품목 중 일치하는 항목을 찾았어요.\n\n오른쪽에서 품목을 확인하고 수량을 입력해 주세요.",actions:["장바구니 담기","다른 품목 검색"]},
+      {id:"cat2",label:"장바구니",ai:"장바구니에 담겼어요.\n\n추가 품목이 있으면 더 담을 수 있어요.\n준비되셨으면 주문을 진행할게요.",actions:["주문 진행","품목 추가"]},
+      {id:"cat3",label:"예산코드 배정",ai:"예산 코드를 선택해 주세요.\n\n부서 예산에서 차감됩니다. 잔액이 충분한 것으로 확인돼요.",actions:["배정 확인","예산 코드 변경"]},
+      {id:"cat4",label:"자동 승인",ai:"100만원 이하 카탈로그 구매로 자동 승인되었어요.\n\n별도 결재 없이 바로 주문이 진행됩니다.",actions:["주문 확정"]},
+      {id:"cat5",label:"주문 완료",ai:"주문이 완료되었어요!\n\n주문번호: CAT-2026-0348\n예상 도착: 2~3일\n\n배송 상황은 알림으로 안내해 드릴게요.",actions:null}
+    ]},
+  // 반복 구매 단축 경로
+  reorder:{name:"지난 주문 반복",on:["a05"],shortcut:true,
+    miniFlow:[
+      {id:"ro1",label:"이전 주문 확인",ai:"이전 주문을 그대로 가져왔어요.\n\n품목과 수량이 동일한지 확인해 주세요.\n수정이 필요하면 말씀해 주세요.",actions:["그대로 주문","수량 변경","품목 변경"]},
+      {id:"ro2",label:"자동 승인",ai:"이전과 동일 조건이라 간소화 승인이 적용돼요.\n\n바로 주문을 진행할게요.",actions:["주문 확정"]},
+      {id:"ro3",label:"주문 완료",ai:"재주문이 완료되었어요!\n\n이전과 동일 조건으로 처리되었습니다.\n배송 상황은 알림으로 안내해 드릴게요.",actions:null}
+    ]},
+};
+// GT별 고유 색상
+const GT_COLOR={
+  cat:{bg:"#F0FDF4",fg:"#166534",accent:"#22C55E",border:"#86EFAC"},
+  pr:{bg:"#EFF6FF",fg:"#1E40AF",accent:"#3B82F6",border:"#93C5FD"},
+  rfq:{bg:"#EDE9FE",fg:"#5B21B6",accent:"#7C3AED",border:"#C4B5FD"},
+  con:{bg:"#FFF7ED",fg:"#9A3412",accent:"#EA580C",border:"#FDBA74"},
+  sub:{bg:"#FDF4FF",fg:"#86198F",accent:"#C026D3",border:"#E879F9"},
+  svc:{bg:"#ECFDF5",fg:"#065F46",accent:"#059669",border:"#6EE7B7"},
+  urg:{bg:"#FEF2F2",fg:"#991B1B",accent:"#EF4444",border:"#FCA5A5"},
+  str:{bg:"#EFF6FF",fg:"#1E3A8A",accent:"#1E40AF",border:"#93C5FD"},
+  exc:{bg:"#FFFBEB",fg:"#92400E",accent:"#D97706",border:"#FCD34D"},
+};
+// 단계 전이 사유 (왜 이 단계로 왔는가)
+// 단계 전이 사유 — Canonical A-Series Registry v1.0 정렬
+const STEP_REASON={
+  a05:"A05 Supplier Risk Scan — 공급사 리스크 스캔",
+  a06:"A06 RFQ Alignment — 경쟁 구조 정렬",
+  a07:"A07 Cost Guard — 비용 안정성 점검",
+  a09:"A09 RFQ Auction — 경쟁 평가/선정",
+  a08:"A08 Policy Compliance — 정책 준수 확인",
+  a13:"A13 Decision Validation — 의사결정 안정성 검증",
+  a12:"A12 Budget Guard — 예산 안정성 확인",
+  a10:"A10 Contract Drafting — 계약 구조 설계",
+  a11:"A11 Contract Approval — 승인 흐름 실행",
+};
+
+// 코칭 모드 — 담당자 없이 직접 진행하는 요청자에게 보여줄 단계별 코칭
+// 코칭 모드 — Canonical A-Series 정렬
+const COACHING={
+  a05:{
+    tip:"공급사 리스크를 확인하세요 (A05 Supplier Risk Scan)",
+    guide:"시스템이 자동으로 적합 업체를 찾았어요.\n\n💡 확인할 것:\n• 거래 이력이 있는 업체가 안전합니다\n• 재무·납기·품질·ESG 4가지 지표를 보세요\n• 최소 3곳은 있어야 경쟁 견적이 가능해요",
+  },
+  a06:{
+    tip:"경쟁 구조를 확인하고 발송하세요 (A06 RFQ Alignment)",
+    guide:"시스템이 견적 요청서 초안을 만들었어요.\n\n💡 확인할 것:\n• 사양이 맞는지 — 빠진 항목 없는지\n• 납기가 현실적인지\n• 평가 기준(가격/기술/납기 비중)이 적절한지\n\n확인 후 '발송' 버튼을 누르면 업체에 전달됩니다.",
+  },
+  a07:{
+    tip:"비용 안정성을 확인하세요 — 가격만 보지 마세요 (A07 Cost Guard)",
+    guide:"견적이 도착했어요. 비교할 때 이것만 기억하세요.\n\n💡 핵심 원칙:\n• 가장 싼 게 최선이 아닙니다 — 납기 지연, 품질 이슈가 더 비싸요\n• 시장 참고가 범위 안에 있는지 확인하세요\n• 조건이 다르면 동일 기준으로 환산해서 비교하세요",
+  },
+  a09:{
+    tip:"경쟁 평가 결과를 확인하세요 — 평가표를 참고하세요 (A09 RFQ Auction)",
+    guide:"평가 점수가 자동 산출되었어요.\n\n💡 선정 기준:\n• 종합 점수가 가장 높은 업체가 추천됩니다\n• 점수 차이가 5점 이내면 납기가 빠른 쪽이 유리해요\n• 선정 사유는 나중에 감사에서 물어봅니다 — 기록이 중요해요",
+  },
+  a08:{
+    tip:"정책 준수를 확인하세요 (A08 Policy Compliance)",
+    guide:"정책 검토 결과 승인이 필요해요.\n\n💡 승인 올리는 방법:\n• 시스템에서 '승인요청' 버튼을 누르면 자동으로 결재선이 설정됩니다\n• 금액에 따라 부서장/본부장/경영진으로 올라갑니다\n• 첨부 서류가 필요하면 시스템이 알려줍니다",
+  },
+  a13:{
+    tip:"의사결정 안정성 검증 — GO/HOLD/STOP 판정입니다 (A13 Decision Validation)",
+    guide:"모든 단계가 끝나고 최종 확인 단계예요.\n\n💡 이 단계가 중요한 이유:\n• 정책 위반이 없는지 시스템이 자동 점검합니다\n• HOLD가 뜨면 추가 확인이 필요하다는 뜻이에요\n• STOP이 뜨면 진행이 차단됩니다 — 사유를 확인하세요\n• GO가 뜨면 발주를 진행하세요",
+  },
+  a12:{
+    tip:"예산 안정성을 확인하세요 (A12 Budget Guard)",
+    guide:"예산 코드와 잔액을 확인해 주세요.\n\n💡 확인할 것:\n• 부서 예산에 잔액이 충분한지\n• Cost Center(예산 코드)가 맞는지\n• 예산 초과 시 추가 승인이 필요합니다",
+  },
+  a10:{
+    tip:"계약 구조를 검토하세요 (A10 Contract Drafting)",
+    guide:"계약서 초안이 준비되었어요.\n\n💡 꼭 확인할 3가지:\n• 납기 조건 — 지연 시 위약금 조항이 있는지\n• 보증 기간 — 최소 1년, 장비는 2년 이상\n• 지급 조건 — 납품 후 30일이 표준입니다\n\n법무팀 검토가 필요하면 시스템이 자동으로 요청합니다.",
+  },
+  a11:{
+    tip:"승인 후 발주를 진행하세요 — 마지막 단계입니다 (A11 Contract Approval)",
+    guide:"승인이 완료되어 발주를 진행할 수 있어요.\n\n💡 발주 후:\n• 발주서가 업체에 자동 전달됩니다\n• 납품 일정은 알림으로 안내됩니다\n• 입고 확인 후 검수를 진행해 주세요\n\n수고하셨습니다! 전체 이력은 Evidence 화면에서 확인할 수 있어요.",
+  },
+};
+
+const SUB_DATA={
+  furniture:{
+    suppliers:[{n:"퍼시스",d:"사무가구 전문",fin:"g",del:"g",qual:"g",esg:"g"},{n:"시디즈",d:"의자·데스크",fin:"g",del:"g",qual:"g",esg:"y"},{n:"일룸",d:"사무환경 종합",fin:"y",del:"g",qual:"y",esg:"g"}],
+    quotes:[{n:"퍼시스",price:"4,800만원",delivery:"3주",note:"시장가 수준",best:true},{n:"시디즈",price:"5,200만원",delivery:"2주",note:"납기 최단"},{n:"일룸",price:"5,500만원",delivery:"4주",note:"시장가 대비 +8%"}],
+    selection:{winner:"퍼시스",scores:[{k:"가격",w:35,v:90},{k:"납기",w:20,v:82},{k:"리스크",w:25,v:88},{k:"기술",w:15,v:85},{k:"ESG",w:5,v:80}],total:87,runner:"시디즈",runnerTotal:83,reason:"가격 적정 + 납기 안정 + 거래 이력 3건"},
+    panel05:{title:"공급사 탐색 결과",sections:[{label:"과거 거래 이력",type:"history",data:[{n:"퍼시스",v:"3건 · 평균 ₩4,500만 · 납기 3주"},{n:"시디즈",v:"1건 · ₩2,100만"}]},{label:"시장 참고가",type:"info",data:"사무가구(20인): ₩4,000만~₩6,000만"},{label:"공급사 Pool",type:"info",data:"등록 6곳 중 3곳 적합"}]},
+    ai05:"AI 공급사 분석 결과, 사무가구 전문 업체 3곳이 조회되었어요.\n\n퍼시스는 거래 이력 3건으로 납기 안정성이 높아요. 시디즈, 일룸도 이력이 확인돼요.\n\n이 3곳에 견적 요청을 진행하시겠어요?"},
+  vehicle:{
+    suppliers:[{n:"SK렌터카",d:"법인 리스·렌탈",fin:"g",del:"g",qual:"g",esg:"g"},{n:"롯데렌탈",d:"차량 렌탈 종합",fin:"g",del:"g",qual:"y",esg:"g"},{n:"AJ렌터카",d:"법인·장기 렌탈",fin:"y",del:"g",qual:"g",esg:"y"}],
+    quotes:[{n:"SK렌터카",price:"68만/월",delivery:"2주",note:"시장가 수준",best:true},{n:"롯데렌탈",price:"72만/월",delivery:"1주",note:"납기 최단"},{n:"AJ렌터카",price:"65만/월",delivery:"3주",note:"가격 최저"}],
+    selection:{winner:"SK렌터카",scores:[{k:"가격",w:35,v:85},{k:"납기",w:20,v:88},{k:"리스크",w:25,v:92},{k:"기술",w:15,v:80},{k:"ESG",w:5,v:82}],total:87,runner:"AJ렌터카",runnerTotal:84,reason:"TCO 적정 + 서비스 안정 + 거래 이력 2건"},
+    panel05:{title:"공급사 탐색 결과",sections:[{label:"과거 거래 이력",type:"history",data:[{n:"SK렌터카",v:"2건 · 월 ₩65만 평균"}]},{label:"시장 참고가",type:"info",data:"중형 세단 리스: ₩60만~₩80만/월"},{label:"공급사 Pool",type:"info",data:"등록 5곳 중 3곳 적합"}]},
+    ai05:"AI 공급사 분석 결과, 법인 차량 리스 업체 3곳이 조회되었어요.\n\nSK렌터카는 거래 이력 2건으로 서비스 안정성이 높아요. 롯데렌탈, AJ렌터카도 이력이 확인돼요.\n\n이 3곳에 견적 요청을 진행하시겠어요?"},
+  lab:{
+    suppliers:[{n:"애질런트코리아",d:"분석장비 전문",fin:"g",del:"y",qual:"g",esg:"g"},{n:"써모피셔",d:"과학장비 종합",fin:"g",del:"g",qual:"g",esg:"g"},{n:"시마즈코리아",d:"계측·분석",fin:"y",del:"g",qual:"g",esg:"y"}],
+    quotes:[{n:"애질런트코리아",price:"1.2억",delivery:"8주",note:"기술 최고",best:true},{n:"써모피셔",price:"1.1억",delivery:"6주",note:"가격 최저"},{n:"시마즈코리아",price:"1.3억",delivery:"10주",note:"납기 길음"}],
+    selection:{winner:"써모피셔",scores:[{k:"가격",w:35,v:92},{k:"납기",w:20,v:90},{k:"리스크",w:25,v:85},{k:"기술",w:15,v:88},{k:"ESG",w:5,v:80}],total:89,runner:"애질런트코리아",runnerTotal:86,reason:"가격 최저 + 납기 최단 + 글로벌 이력"},
+    panel05:{title:"공급사 탐색 결과",sections:[{label:"과거 거래 이력",type:"history",data:[{n:"써모피셔",v:"2건 · 평균 ₩1.0억"},{n:"애질런트",v:"1건 · ₩1.3억"}]},{label:"시장 참고가",type:"info",data:"분석장비: ₩8,000만~₩1.5억"},{label:"공급사 Pool",type:"info",data:"등록 4곳 중 3곳 적합"}]},
+    ai05:"AI 공급사 분석 결과, 연구장비 전문 업체 3곳이 조회되었어요.\n\n써모피셔는 거래 이력 2건으로 납기 안정성이 높아요. 애질런트, 시마즈도 이력이 확인돼요.\n\n이 3곳에 견적 요청을 진행하시겠어요?"},
+  consulting:{
+    suppliers:[{n:"맥킨지코리아",d:"경영 컨설팅",fin:"g",del:"g",qual:"g",esg:"g"},{n:"BCG코리아",d:"전략 컨설팅",fin:"g",del:"g",qual:"g",esg:"y"},{n:"딜로이트",d:"경영자문 종합",fin:"g",del:"y",qual:"g",esg:"g"}],
+    quotes:[{n:"맥킨지코리아",price:"1.8억",delivery:"3개월",note:"브랜드 최고"},{n:"BCG코리아",price:"1.5억",delivery:"3개월",note:"가성비 최적",best:true},{n:"딜로이트",price:"1.2억",delivery:"4개월",note:"가격 최저"}],
+    selection:{winner:"BCG코리아",scores:[{k:"가격",w:35,v:88},{k:"납기",w:20,v:85},{k:"리스크",w:25,v:90},{k:"기술",w:15,v:92},{k:"ESG",w:5,v:85}],total:88,runner:"딜로이트",runnerTotal:85,reason:"가성비 최적 + 전략 역량 우수"},
+    panel05:{title:"공급사 탐색 결과",sections:[{label:"과거 거래 이력",type:"history",data:[{n:"BCG코리아",v:"1건 · ₩1.3억"},{n:"딜로이트",v:"2건 · 평균 ₩1.1억"}]},{label:"시장 참고가",type:"info",data:"경영 컨설팅: ₩1.0억~₩2.0억"},{label:"공급사 Pool",type:"info",data:"등록 5곳 중 3곳 적합"}]},
+    ai05:"AI 공급사 분석 결과, 전문 컨설팅 업체 3곳이 조회되었어요.\n\nBCG코리아는 거래 이력 1건으로 전략 역량이 높게 평가돼요. 맥킨지, 딜로이트도 이력이 확인돼요.\n\n이 3곳에 제안 요청을 진행하시겠어요?"},
+  clean:{
+    suppliers:[{n:"클린파트너스",d:"시설관리 전문",fin:"g",del:"g",qual:"g",esg:"g"},{n:"그린케어",d:"청소·환경",fin:"g",del:"g",qual:"y",esg:"g"},{n:"한국FM",d:"통합 시설관리",fin:"y",del:"g",qual:"g",esg:"y"}],
+    quotes:[{n:"클린파트너스",price:"280만/월",delivery:"5월",note:"가성비 최적",best:true},{n:"그린케어",price:"310만/월",delivery:"5월",note:"범위 넓음"},{n:"한국FM",price:"350만/월",delivery:"6월",note:"통합 관리"}],
+    selection:{winner:"클린파트너스",scores:[{k:"가격",w:35,v:90},{k:"납기",w:20,v:88},{k:"리스크",w:25,v:92},{k:"기술",w:15,v:85},{k:"ESG",w:5,v:80}],total:88,runner:"그린케어",runnerTotal:85,reason:"가성비 최적 + 서비스 품질 1위"},
+    panel05:{title:"공급사 탐색 결과",sections:[{label:"과거 거래 이력",type:"history",data:[{n:"클린파트너스",v:"4건 · 평균 ₩260만/월"},{n:"그린케어",v:"1건 · ₩290만/월"}]},{label:"시장 참고가",type:"info",data:"시설관리: ₩250만~₩380만/월"},{label:"공급사 Pool",type:"info",data:"등록 6곳 중 3곳 적합"}]},
+    ai05:"AI 공급사 분석 결과, 시설관리 전문 업체 3곳이 조회되었어요.\n\n클린파트너스는 거래 이력 4건으로 서비스 품질 평가가 양호해요. 그린케어, 한국FM도 이력이 확인돼요.\n\n이 3곳에 서비스 제안을 요청하시겠어요?"},
+  security:{
+    suppliers:[{n:"에스원",d:"보안·경비 전문",fin:"g",del:"g",qual:"g",esg:"g"},{n:"ADT캡스",d:"종합 보안",fin:"g",del:"g",qual:"g",esg:"y"},{n:"KT텔레캅",d:"무인경비·출입관리",fin:"g",del:"y",qual:"y",esg:"g"}],
+    quotes:[{n:"에스원",price:"420만/월",delivery:"계약 즉시",note:"서비스 최고",best:true},{n:"ADT캡스",price:"380만/월",delivery:"계약 즉시",note:"가격 최저"},{n:"KT텔레캅",price:"400만/월",delivery:"2주",note:"IT연계 강점"}],
+    selection:{winner:"에스원",scores:[{k:"가격",w:35,v:82},{k:"납기",w:20,v:90},{k:"리스크",w:25,v:95},{k:"기술",w:15,v:88},{k:"ESG",w:5,v:85}],total:88,runner:"ADT캡스",runnerTotal:85,reason:"서비스 품질 1위 + 리스크 최저"},
+    panel05:{title:"공급사 탐색 결과",sections:[{label:"과거 거래 이력",type:"history",data:[{n:"에스원",v:"2건 · 평균 ₩400만/월"},{n:"ADT캡스",v:"1건 · ₩350만/월"}]},{label:"시장 참고가",type:"info",data:"보안경비: ₩350만~₩500만/월"},{label:"공급사 Pool",type:"info",data:"등록 5곳 중 3곳 적합"}]},
+    ai05:"AI 공급사 분석 결과, 보안경비 전문 업체 3곳이 조회되었어요.\n\n에스원은 거래 이력 2건으로 서비스 안정성이 높아요. ADT캡스, KT텔레캅도 이력이 확인돼요.\n\n이 3곳에 서비스 제안을 요청하시겠어요?"},
+};
+
+function gv(o,gt){if(!o)return"";if(typeof o==="string")return o;return o[gt]||o._||"";}
+function ga(o,gt){if(!o)return null;if(Array.isArray(o))return o;return o[gt]||o._||null;}
+
+// ── 문서관리 항목 (전문가 리뷰 → 문서 작성 대상 8건) ──
+const DOC_ITEMS = [
+  { id:"D1", title:"이해충돌 관리 정책", ver:"v1.0 신규", type:"new", priority:2,
+    scope:"연 1회 구매팀 전자 서약, 서약 일자 시스템 기록, 만료 시 갱신 팝업, 특수 관계 업체 건별 확인, 위반 시 징계 기준",
+    ref:"(신규 — 기존 설계문서 없음)", owner:"구매기획", status:"draft" },
+  { id:"D2", title:"견적서 진위 검증 로직", ver:"v1.0 신규", type:"new", priority:4,
+    scope:"이메일 도메인 교차 확인, 수신 시각 분포 분석, 금액 패턴 이상 탐지(균일 차이), 들러리 견적 탐지 규칙",
+    ref:"(신규 — 기존 설계문서 없음)", owner:"IT개발", status:"todo" },
+  { id:"D3", title:"구독 라이선스 최적화 모델", ver:"v1.0 신규", type:"new", priority:4,
+    scope:"사용률 기반 석수 최적화, 플랜 업/다운 판단 기준, 대안 SaaS 비교, IT 보안(SSO/ISMS-P) 체크",
+    ref:"(신규 — 기존 설계문서 없음)", owner:"IT기획", status:"todo" },
+  { id:"D4", title:"Audit Trail Data Model", ver:"v1.1 → v2.0", type:"upgrade", priority:1,
+    scope:"BJ 단계별 의사결정 이력(actor/timestamp/action/reason/before·after state), 평가 점수 Lock, 서약 기록",
+    ref:"Audit Trail Data Model v1.1", owner:"아키텍처", status:"todo" },
+  { id:"D5", title:"Control Profile Library", ver:"v1.0 → v1.1", type:"upgrade", priority:2,
+    scope:"승인 매트릭스 3차원(금액×품목위험도×공급사신규여부), 분할 발주 탐지, 경쟁 충분성 예외 승인",
+    ref:"Control Profile Library v1.0", owner:"거버넌스", status:"todo" },
+  { id:"D6", title:"Compliance Evidence Packaging", ver:"v1.0 → v1.1", type:"upgrade", priority:2,
+    scope:"수의계약 사유서 4항목 구조화, 경쟁 불충분 사유서 양식, 감사 증적 패키징 자동화",
+    ref:"Compliance Evidence Packaging v1.0", owner:"거버넌스", status:"todo" },
+  { id:"D7", title:"DB Physical Schema", ver:"v1.1 → v2.0", type:"upgrade", priority:1,
+    scope:"coi_declaration_log, evaluation_score_lock, split_order_alert, quote_verification_log 테이블 추가",
+    ref:"DB Physical Schema v1.1", owner:"아키텍처", status:"todo" },
+  { id:"D8", title:"보안 아키텍처 (SoD)", ver:"v1.0 신규", type:"gap", priority:3,
+    scope:"RBAC 역할 정의(요청자/선정자/승인자 분리), SoD 매트릭스, Tenant 격리, API Gateway",
+    ref:"(Gap — 크리티컬 식별)", owner:"보안", status:"todo" },
+];
+const DOC_STATUS_LABEL = { todo:"작성 예정", draft:"작성 중", review:"검토 중", done:"완료" };
+const DOC_STATUS_COLOR = { todo:"#64748B", draft:"#F59E0B", review:"#3B82F6", done:"#22C55E" };
+
+function buildSteps(gt,subKey){
+  const on=GT_ON[gt].on;
+  const sd=subKey&&SUB_DATA[subKey]?SUB_DATA[subKey]:null;
+  return MASTER_STEPS.filter(s=>on.includes(s.id)).map((s,i,arr)=>{
+    const rawSup=s.suppliers?.[gt];
+    const supArr=Array.isArray(rawSup)?rawSup:(rawSup&&typeof rawSup==="object"?(rawSup[subKey]||rawSup._||null):null);
+    const base={
+    ...s,
+    ai:gv(s.ai,gt),detail:gv(s.detail,gt),
+    wait:s.wait?{msg:gv(s.wait.msg,gt),dur:gv(s.wait.dur,gt),notify:gv(s.wait.notify,gt)}:null,
+    suppliers:supArr?.map(calcSup)||null,
+    quotes:s.quotes?.[gt]||null,
+    preview:s.preview?.[gt]||null,
+    selection:s.selection?.[gt]||null,
+    panel:s.panel?.[gt]||null,
+    actions:ga(s.actions,gt),
+    final:i===arr.length-1,
+    };
+    if(sd&&s.id==="a05"){
+      base.suppliers=sd.suppliers?.map(calcSup)||base.suppliers;
+      base.panel=sd.panel05||base.panel;
+      if(sd.ai05)base.ai=sd.ai05;
+    }
+    if(sd&&s.id==="a07"&&sd.quotes)base.quotes=sd.quotes;
+    if(sd&&s.id==="a09"&&sd.selection)base.selection=sd.selection;
+    return base;
+  });
+}
+
+// ═══ 4유형 표준 보조화면 ═══
+const AUX_POOL=[
+  {id:1,name:"한국오피스",field:"사무용품",desc:"문구·소모품, 거래 3건",fin:"g",del:"g",qual:"g",esg:"y"},
+  {id:2,name:"테크솔루션즈",field:"IT",desc:"IT장비·SW, 거래 5건",fin:"g",del:"g",qual:"g",esg:"g"},
+  {id:3,name:"글로벌서플라이",field:"제조",desc:"MRO·산업자재, 거래 12건",fin:"g",del:"y",qual:"g",esg:"g"},
+  {id:4,name:"클린파트너스",field:"시설관리",desc:"청소·미화, 거래 4건",fin:"g",del:"g",qual:"g",esg:"g"},
+  {id:5,name:"스마트IT",field:"IT",desc:"클라우드·보안, 신규",fin:"y",del:"g",qual:"y",esg:"g"},
+  {id:6,name:"에스원",field:"서비스",desc:"보안경비, 거래 2건",fin:"g",del:"g",qual:"g",esg:"g"},
+];
+function AuxSearch({title,mode,onDone,onClose}){
+  const[q,setQ]=useState("");const[sel,setSel]=useState(new Set());const[reason,setReason]=useState("");const[filt,setFilt]=useState("전체");
+  const fltd=AUX_POOL.filter(it=>(!q||it.name.includes(q)||(it.field||"").includes(q))&&(filt==="전체"||it.field===filt));
+  return <div style={{display:"flex",flexDirection:"column",height:"100%"}}>
+    <div style={{padding:"10px 14px",borderBottom:`1px solid ${T.border.light}`,display:"flex",justifyContent:"space-between",alignItems:"center"}}><span style={{fontSize:13,fontWeight:700}}>{title}</span><button onClick={onClose} style={{padding:"3px 10px",borderRadius:6,border:`1px solid ${T.border.light}`,background:"#FFF",fontSize:11,cursor:"pointer",color:T.text.muted}}>닫기</button></div>
+    <div style={{padding:"6px 14px"}}><input value={q} onChange={e=>setQ(e.target.value)} placeholder="업체명, 분야 검색..." style={{width:"100%",padding:"7px 10px",borderRadius:6,border:`1px solid ${T.border.light}`,fontSize:12,outline:"none",boxSizing:"border-box"}}/>
+      <div style={{display:"flex",gap:3,marginTop:4}}>{["전체","IT","시설관리","제조","서비스"].map(f=><button key={f} onClick={()=>setFilt(f)} style={{padding:"2px 8px",borderRadius:99,fontSize:10,border:`1px solid ${filt===f?T.state.progress.accent:T.border.light}`,background:filt===f?T.state.progress.bg:"#FFF",color:filt===f?T.state.progress.fg:T.text.muted,cursor:"pointer"}}>{f}</button>)}</div>
+    </div>
+    <div style={{flex:1,overflowY:"auto",padding:"0 14px"}}>{fltd.map((it,i)=>{const isSel=sel.has(it.id);return <div key={i} onClick={()=>{const s=new Set(sel);isSel?s.delete(it.id):s.add(it.id);setSel(s);}} style={{padding:"8px 10px",borderRadius:10,border:`1px solid ${isSel?T.state.progress.accent:T.border.light}`,background:isSel?T.state.progress.bg:"#FFF",marginBottom:3,cursor:"pointer"}}><div style={{display:"flex",justifyContent:"space-between"}}><div><span style={{fontSize:12,fontWeight:600}}>{it.name}</span><span style={{fontSize:10,color:T.text.muted,marginLeft:4}}>{it.field}</span></div><div style={{display:"flex",gap:2}}>{["fin","del","qual","esg"].map(k=><div key={k} style={{width:7,height:7,borderRadius:4,background:it[k]==="g"?T.state.complete.accent:it[k]==="y"?T.state.review.accent:T.state.blocked.accent}}/>)}</div></div><div style={{fontSize:10,color:T.text.secondary,marginTop:2}}>{it.desc}</div></div>;})}</div>
+    {mode==="exclude"&&sel.size>0&&<div style={{padding:"6px 14px",borderTop:`1px solid ${T.border.light}`}}><input value={reason} onChange={e=>setReason(e.target.value)} placeholder="제외 사유 (감사 증적, 필수)" style={{width:"100%",padding:"5px 8px",borderRadius:6,border:`1px solid ${T.state.review.border}`,fontSize:11,outline:"none",background:T.state.review.bg,boxSizing:"border-box"}}/></div>}
+    <div style={{padding:"8px 14px",borderTop:`1px solid ${T.border.light}`}}><button onClick={()=>onDone(Array.from(sel),reason)} disabled={sel.size===0||(mode==="exclude"&&!reason.trim())} style={{width:"100%",padding:"7px",borderRadius:10,border:"none",background:sel.size>0?T.state.progress.accent:T.border.medium,color:"#FFF",fontSize:12,fontWeight:600,cursor:sel.size>0?"pointer":"default"}}>{mode==="exclude"?sel.size+"곳 제외":mode==="unresponsive"?"처리 완료":sel.size+"곳 추가"}</button></div>
+  </div>;
+}
+function AuxForm({title,fields,onDone,onClose}){
+  const[d,setD]=useState(()=>{const o={};fields.forEach(f=>{o[f.k]=f.df||"";});return o;});
+  return <div style={{display:"flex",flexDirection:"column",height:"100%"}}>
+    <div style={{padding:"10px 14px",borderBottom:`1px solid ${T.border.light}`,display:"flex",justifyContent:"space-between",alignItems:"center"}}><span style={{fontSize:13,fontWeight:700}}>{title}</span><button onClick={onClose} style={{padding:"3px 10px",borderRadius:6,border:`1px solid ${T.border.light}`,background:"#FFF",fontSize:11,cursor:"pointer",color:T.text.muted}}>닫기</button></div>
+    <div style={{flex:1,overflowY:"auto",padding:"10px 14px",display:"flex",flexDirection:"column",gap:8}}>
+      {fields.map(f=><div key={f.k}><label style={{fontSize:11,fontWeight:600,color:T.text.secondary,marginBottom:3,display:"block"}}>{f.l}{f.req&&<span style={{color:T.state.blocked.accent}}> *</span>}</label>
+        {f.tp==="textarea"?<textarea value={d[f.k]} onChange={e=>setD(p=>({...p,[f.k]:e.target.value}))} placeholder={f.p} rows={2} style={{width:"100%",padding:"6px 8px",borderRadius:6,border:`1px solid ${T.border.light}`,fontSize:12,resize:"vertical",outline:"none",fontFamily:"inherit",boxSizing:"border-box"}}/>
+        :f.tp==="select"?<select value={d[f.k]} onChange={e=>setD(p=>({...p,[f.k]:e.target.value}))} style={{width:"100%",padding:"6px 8px",borderRadius:6,border:`1px solid ${T.border.light}`,fontSize:12,outline:"none",boxSizing:"border-box"}}>{(f.opts||[]).map(o=><option key={o} value={o}>{o}</option>)}</select>
+        :<div style={{display:"flex",alignItems:"center",gap:4}}><input value={d[f.k]} onChange={e=>setD(p=>({...p,[f.k]:e.target.value}))} placeholder={f.p} type={f.tp==="number"?"number":"text"} style={{flex:1,padding:"6px 8px",borderRadius:6,border:`1px solid ${T.border.light}`,fontSize:12,outline:"none"}}/>{f.u&&<span style={{fontSize:11,color:T.text.muted}}>{f.u}</span>}</div>}
+      </div>)}
+    </div>
+    <div style={{padding:"8px 14px",borderTop:`1px solid ${T.border.light}`}}><button onClick={()=>onDone(d)} style={{width:"100%",padding:"7px",borderRadius:10,border:"none",background:T.state.progress.accent,color:"#FFF",fontSize:12,fontWeight:600,cursor:"pointer"}}>확인</button></div>
+  </div>;
+}
+function AuxCompare({title,items,onDone,onClose}){
+  const[w,setW]=useState(()=>{const o={};items.forEach(it=>{o[it.k]=it.v;});return o;});
+  const tot=Object.values(w).reduce((a,b)=>a+b,0);
+  return <div style={{display:"flex",flexDirection:"column",height:"100%"}}>
+    <div style={{padding:"10px 14px",borderBottom:`1px solid ${T.border.light}`,display:"flex",justifyContent:"space-between",alignItems:"center"}}><span style={{fontSize:13,fontWeight:700}}>{title}</span><button onClick={onClose} style={{padding:"3px 10px",borderRadius:6,border:`1px solid ${T.border.light}`,background:"#FFF",fontSize:11,cursor:"pointer",color:T.text.muted}}>닫기</button></div>
+    <div style={{flex:1,overflowY:"auto",padding:"10px 14px"}}>
+      {items.map(it=><div key={it.k} style={{marginBottom:12}}><div style={{display:"flex",justifyContent:"space-between",marginBottom:3}}><span style={{fontSize:12,fontWeight:600}}>{it.l}</span><span style={{fontSize:13,fontWeight:700,color:T.state.progress.fg}}>{w[it.k]}%</span></div><input type="range" min={0} max={100} step={5} value={w[it.k]} onChange={e=>setW(p=>({...p,[it.k]:parseInt(e.target.value)}))} style={{width:"100%",accentColor:T.state.progress.accent}}/></div>)}
+      <div style={{padding:"6px 10px",borderRadius:10,background:tot===100?T.state.complete.bg:T.state.blocked.bg,border:`1px solid ${tot===100?T.state.complete.border:T.state.blocked.border}`,textAlign:"center"}}><span style={{fontSize:12,fontWeight:700,color:tot===100?T.state.complete.fg:T.state.blocked.fg}}>합계: {tot}% {tot===100?"✓":"(100% 필요)"}</span></div>
+    </div>
+    <div style={{padding:"8px 14px",borderTop:`1px solid ${T.border.light}`}}><button onClick={()=>onDone(w)} disabled={tot!==100} style={{width:"100%",padding:"7px",borderRadius:10,border:"none",background:tot===100?T.state.progress.accent:T.border.medium,color:"#FFF",fontSize:12,fontWeight:600,cursor:tot===100?"pointer":"default"}}>적용</button></div>
+  </div>;
+}
+function AuxCheck({title,secs,upload,onDone,onClose}){
+  const[chk,setChk]=useState(()=>{const o={};secs.forEach(s=>s.its.forEach(it=>{o[it.id]=false;}));return o;});
+  const[notes,setNotes]=useState({});
+  const tot=secs.reduce((a,s)=>a+s.its.length,0);const dn=Object.values(chk).filter(Boolean).length;
+  return <div style={{display:"flex",flexDirection:"column",height:"100%"}}>
+    <div style={{padding:"10px 14px",borderBottom:`1px solid ${T.border.light}`,display:"flex",justifyContent:"space-between",alignItems:"center"}}><div><span style={{fontSize:13,fontWeight:700}}>{title}</span><span style={{fontSize:11,color:T.text.muted,marginLeft:6}}>{dn}/{tot}</span></div><button onClick={onClose} style={{padding:"3px 10px",borderRadius:6,border:`1px solid ${T.border.light}`,background:"#FFF",fontSize:11,cursor:"pointer",color:T.text.muted}}>닫기</button></div>
+    <div style={{height:3,background:T.border.light}}><div style={{height:3,background:dn===tot?T.state.complete.accent:T.state.progress.accent,width:`${(dn/tot)*100}%`,transition:"width .3s"}}/></div>
+    <div style={{flex:1,overflowY:"auto",padding:"6px 14px"}}>
+      {secs.map((sec,si)=><div key={si} style={{marginBottom:10}}><div style={{fontSize:10,fontWeight:600,color:T.text.muted,textTransform:"uppercase",letterSpacing:0.5,marginBottom:4}}>{sec.l}</div>
+        {sec.its.map(it=><div key={it.id} style={{display:"flex",alignItems:"flex-start",gap:6,padding:"5px 0",borderBottom:`1px solid ${T.border.light}`}}>
+          <div onClick={()=>setChk(p=>({...p,[it.id]:!p[it.id]}))} style={{width:18,height:18,borderRadius:3,border:`2px solid ${chk[it.id]?T.state.complete.accent:T.border.medium}`,background:chk[it.id]?T.state.complete.accent:"transparent",display:"flex",alignItems:"center",justifyContent:"center",cursor:"pointer",flexShrink:0,marginTop:1}}>{chk[it.id]&&<span style={{color:"#FFF",fontSize:10,fontWeight:700}}>✓</span>}</div>
+          <div style={{flex:1,minWidth:0}}><div style={{fontSize:12,color:chk[it.id]?T.state.complete.fg:T.text.primary,fontWeight:500}}>{it.l}</div>{it.d&&<div style={{fontSize:10,color:T.text.muted,marginTop:1}}>{it.d}</div>}{it.note&&<input value={notes[it.id]||""} onChange={e=>setNotes(p=>({...p,[it.id]:e.target.value}))} placeholder="비고..." style={{width:"100%",padding:"3px 6px",borderRadius:6,border:`1px solid ${T.border.light}`,fontSize:10,marginTop:3,outline:"none",boxSizing:"border-box"}}/>}</div>
+          {it.sev&&<span style={{padding:"1px 5px",borderRadius:4,fontSize:9,fontWeight:600,background:it.sev==="high"?T.state.blocked.bg:T.state.review.bg,color:it.sev==="high"?T.state.blocked.fg:T.state.review.fg,flexShrink:0}}>{it.sev==="high"?"필수":"권장"}</span>}
+        </div>)}
+      </div>)}
+      {upload&&<div style={{padding:"8px 10px",borderRadius:10,border:`2px dashed ${T.border.medium}`,textAlign:"center",cursor:"pointer"}}><div style={{fontSize:16}}>📎</div><div style={{fontSize:11,color:T.text.muted}}>증빙 파일 첨부</div></div>}
+    </div>
+    <div style={{padding:"8px 14px",borderTop:`1px solid ${T.border.light}`}}><button onClick={()=>onDone(chk,notes)} style={{width:"100%",padding:"7px",borderRadius:10,border:"none",background:dn===tot?T.state.complete.accent:T.state.review.accent,color:"#FFF",fontSize:12,fontWeight:600,cursor:"pointer"}}>{dn===tot?"완료":(tot-dn)+"건 미완료"}</button></div>
+  </div>;
+}
+
+/* ═══ Evidence 더미 데이터 3건 (3_evidence_v2 기준 — RFQ/PR/Emergency) ═══ */
+const MOCK_EVIDENCE=[
+  {id:"EXEC-2026-047",title:"서버 장비 구매",gt:"rfq",gtLabel:"RFQ Standard",vendor:"대한IT솔루션",amount:"₩4,200만",state:"COMPLETED",requestedAt:"03-24 09:10",completedAt:"03-24 15:42",department:"IT인프라팀",requester:"김형주 과장",
+    processId:{sessionId:"SES-2026-047",guideType:"RFQ 업체 비교 구매",tier:"Operational",category:"L3-080101 서버 장비",intent:"NEW_PURCHASE",condition:"no_contract, amount=4200만"},
+    decisionTrace:[{time:"09:10",event:"Category",detail:"L3-080101 서버 장비",confidence:0.25},{time:"09:10",event:"Condition",detail:"계약 없음·4200만·비긴급",confidence:0.55},{time:"09:11",event:"GT 확정",detail:"G11 RFQ Standard",confidence:0.78},{time:"09:12",event:"사용자 확인",detail:"G11 확정",confidence:0.90}],
+    policyApplication:[{ruleId:"POL-AMT-002",name:"금액별 승인",result:"부서장 승인 (500만~5천만)",applied:true},{ruleId:"POL-CMP-001",name:"경쟁 견적 의무",result:"3곳 충족",applied:true},{ruleId:"POL-ETH-001",name:"이해충돌(COI)",result:"확인 완료",applied:true},{ruleId:"POL-ESG-001",name:"ESG 기준",result:"충족",applied:true}],
+    evidence:{savings:"시장가 대비 ₩200만 절감 (5%)",competition:"3곳 경쟁 견적",policy:"부서장 승인 완료",contract:"납품 후 30일·하자보증 2년",duration:"6시간 32분"},
+    supplierEvidence:{selected:{name:"대한IT솔루션",score:89,riskLevel:"낮음",riskScores:{fin:"G",del:"G",qual:"G",esg:"G"}},runner:{name:"미래정보시스템",score:83},benchmark:{market:"₩3,800만~₩5,200만",previous:"₩4,100만",deviation:"-5%"},costApproval:"예산 범위 내"},
+    trace:[{time:"09:12",engine:"T07",agent:"A05",label:"공급사 리스크 스캔",result:"3곳 적합",state:"IN_PROGRESS"},{time:"09:13",engine:"T13",agent:"A05",label:"공급사 매칭",result:"8곳 중 3곳",state:"IN_PROGRESS"},{time:"09:15",engine:"T08",agent:"A06",label:"RFQ 발송",result:"3곳 견적 요청",state:"IN_PROGRESS"},{time:"14:00",engine:"—",agent:"—",label:"견적 수신 3/3",result:"봉인 개봉",state:"IN_PROGRESS"},{time:"14:05",engine:"T06",agent:"A07",label:"비용 분석",result:"시장가 내",state:"IN_PROGRESS"},{time:"14:06",engine:"T10",agent:"A07",label:"이상단가 탐지",result:"이상 없음",state:"IN_PROGRESS"},{time:"14:10",engine:"T08",agent:"A09",label:"경쟁 평가",result:"대한IT 89점 1위",state:"IN_PROGRESS"},{time:"14:15",engine:"T13",agent:"A08",label:"정책 점검 (T13+T14)",result:"부서장 승인 필요",state:"HUMAN_REVIEW_REQUIRED"},{time:"14:32",engine:"—",agent:"—",label:"부서장 승인",result:"APPROVE",state:"IN_PROGRESS"},{time:"14:35",engine:"T15",agent:"A13",label:"GO/HOLD/STOP",result:"GO",state:"IN_PROGRESS"},{time:"14:40",engine:"T12",agent:"A10",label:"계약 발송",result:"계약서 발송",state:"IN_PROGRESS"},{time:"15:42",engine:"—",agent:"A11",label:"발주 완료",result:"PO 발행",state:"COMPLETED"}],
+    governance:{stopCodes:0,humanReviews:1,overrides:0,escalations:0,details:[{type:"HUMAN_REVIEW",time:"14:15~14:32",actor:"박부서장",decision:"APPROVE",reason:"경쟁 견적 3곳·가격 적정"}]}},
+  {id:"EXEC-2026-051",title:"노트북 5대 구매",gt:"pr",gtLabel:"Standard PR",vendor:"한국사무기기",amount:"₩800만",state:"COMPLETED",requestedAt:"03-25 10:00",completedAt:"03-25 14:20",department:"마케팅팀",requester:"이영희 대리",
+    processId:{sessionId:"SES-2026-051",guideType:"PR 구매요청서",tier:"Operational",category:"L3-080201 노트북",intent:"NEW_PURCHASE",condition:"no_contract, amount=800만"},
+    decisionTrace:[{time:"10:00",event:"Category",detail:"L3-080201 노트북",confidence:0.25},{time:"10:00",event:"GT 확정",detail:"G06 Standard PR",confidence:0.83},{time:"10:01",event:"자동 확정",detail:"Confidence ≥0.80",confidence:0.83}],
+    policyApplication:[{ruleId:"POL-AMT-002",name:"금액별 승인",result:"부서장 승인 (총액 800만)",applied:true},{ruleId:"POL-BUD-001",name:"예산 범위",result:"부서 예산 내",applied:true},{ruleId:"POL-ETH-001",name:"이해충돌(COI)",result:"확인 완료",applied:true},{ruleId:"POL-SPLIT-001",name:"분할 발주 점검",result:"30일 내 동일 품목 없음",applied:true}],
+    evidence:{savings:"이전 대비 ₩2만/대 절감 (1.2%)",competition:"기존 거래 2곳 비교",policy:"부서장 승인 완료",contract:"납품 후 30일·보증 3년",duration:"4시간 20분"},
+    supplierEvidence:{selected:{name:"한국사무기기",score:92,riskLevel:"낮음",riskScores:{fin:"G",del:"G",qual:"G",esg:"G"}},runner:{name:"스마트오피스",score:85},benchmark:{market:"₩150만~₩200만/대",previous:"₩162만",deviation:"-1.2%"},costApproval:"예산 범위 내"},
+    trace:[{time:"10:05",engine:"T07",agent:"A05",label:"공급사 스캔",result:"2곳 적합",state:"IN_PROGRESS"},{time:"10:10",engine:"T06",agent:"A07",label:"비용 분석",result:"시장가 내",state:"IN_PROGRESS"},{time:"10:12",engine:"T13",agent:"A08",label:"정책 점검 (T13+T14)",result:"부서장 승인",state:"HUMAN_REVIEW_REQUIRED"},{time:"10:45",engine:"—",agent:"—",label:"팀장→부서장 승인",result:"APPROVE",state:"IN_PROGRESS"},{time:"10:50",engine:"T12",agent:"A10",label:"PO 준비",result:"계약 발송",state:"IN_PROGRESS"},{time:"14:20",engine:"—",agent:"A11",label:"발주 완료",result:"완료",state:"COMPLETED"}],
+    governance:{stopCodes:0,humanReviews:1,overrides:0,escalations:0,details:[{type:"HUMAN_REVIEW",time:"10:12~10:45",actor:"김팀장→박부서장",decision:"APPROVE",reason:"예산 내·이력 8건"}]}},
+  {id:"EXEC-2026-055",title:"화재 감지기 긴급 교체",gt:"urg",gtLabel:"Emergency",vendor:"세이프티코리아",amount:"₩350만",state:"COMPLETED",requestedAt:"03-26 08:30",completedAt:"03-26 10:15",department:"시설관리팀",requester:"최안전 과장",
+    processId:{sessionId:"SES-2026-055",guideType:"URG 긴급 구매",tier:"Exception",category:"L3-030205 안전장비",intent:"EMERGENCY",condition:"urgency=true"},
+    decisionTrace:[{time:"08:30",event:"긴급 감지",detail:"화재·고장 → EMERGENCY",confidence:0.90},{time:"08:30",event:"GT 확정",detail:"G31 Emergency",confidence:0.95}],
+    policyApplication:[{ruleId:"POL-URG-001",name:"긴급 구매 정책",result:"즉시 승인·사후 보고 3일",applied:true},{ruleId:"POL-URG-002",name:"긴급 할증 한도",result:"시장가 +12% (한도 +15%)",applied:true},{ruleId:"POL-ETH-001",name:"이해충돌(COI)",result:"확인 완료",applied:true}],
+    evidence:{savings:"긴급 할증 +12%",competition:"단일 업체 즉시 출고",policy:"긴급 승인·사후보고 의무",contract:"즉시 출고·검수 후 지급",duration:"1시간 45분"},
+    supplierEvidence:{selected:{name:"세이프티코리아",score:88,riskLevel:"낮음",riskScores:{fin:"G",del:"G",qual:"G",esg:"G"}},runner:null,benchmark:{market:"₩310만 (정상가)",previous:"—",deviation:"+12%"},costApproval:"긴급 할증 범위 내"},
+    trace:[{time:"08:32",engine:"T07",agent:"A05",label:"긴급 공급사 조회",result:"즉시 출고 1곳",state:"IN_PROGRESS"},{time:"08:33",engine:"T06",agent:"A07",label:"긴급 비용 점검",result:"시장가 +12%",state:"IN_PROGRESS"},{time:"08:35",engine:"T13",agent:"A08",label:"긴급 정책 (T13+T14)",result:"즉시 승인",state:"IN_PROGRESS"},{time:"08:40",engine:"T15",agent:"A13",label:"긴급 GO",result:"GO (긴급)",state:"IN_PROGRESS"},{time:"08:45",engine:"—",agent:"A11",label:"긴급 발주",result:"PO 즉시 발행",state:"IN_PROGRESS"},{time:"10:15",engine:"—",agent:"—",label:"출고 완료",result:"현장 도착",state:"COMPLETED"}],
+    governance:{stopCodes:0,humanReviews:0,overrides:0,escalations:0,details:[],postObligation:"사후 보고서 3일 내 제출 (기한: 2026-03-29)"}},
+  {id:"EXEC-2026-059",title:"OEM 전용 센서 모듈 수의계약",gt:"exc",gtLabel:"Exception (수의계약)",vendor:"OEM 지정업체",amount:"₩1,850만",state:"COMPLETED",requestedAt:"03-27 09:00",completedAt:"03-27 16:30",department:"생산기술팀",requester:"박정우 차장",
+    processId:{sessionId:"SES-2026-059",guideType:"EXC 특별 승인 (수의계약)",tier:"Exception",category:"L3-090301 OEM 부품",intent:"MAINTENANCE",condition:"sole_supplier, oem_designated"},
+    decisionTrace:[{time:"09:00",event:"Category",detail:"L3-090301 OEM 부품·센서 모듈",confidence:0.30},{time:"09:01",event:"Condition",detail:"단일 공급사·OEM 지정·호환 불가",confidence:0.60},{time:"09:02",event:"GT 확정",detail:"EXC 특별 승인 (수의계약)",confidence:0.85},{time:"09:05",event:"사유서 작성",detail:"독점 사유: OEM 호환성·특허",confidence:0.85},{time:"10:30",event:"위원회 상정",detail:"수의계약 심의 요청",confidence:0.85},{time:"14:00",event:"위원회 승인",detail:"조건부 승인 (COI 보완 후)",confidence:0.70},{time:"15:00",event:"COI 보완",detail:"이해충돌 서약 완료",confidence:0.90},{time:"16:00",event:"임원 Override",detail:"가격 +8% 수용 — 일정 사유",confidence:0.90}],
+    policyApplication:[{ruleId:"POL-EXC-001",name:"수의계약 사유서",result:"4항목 작성 완료 (독점/조사/적정성/전환계획)",applied:true},{ruleId:"POL-ETH-001",name:"이해충돌(COI) 확인",result:"⚠️ 최초 미확인 → HOLD → 서약 완료",applied:true},{ruleId:"POL-ETH-002",name:"반부패 조항",result:"준수 확인",applied:true},{ruleId:"POL-ESG-001",name:"ESG 기준",result:"미평가 (단일공급사 — 대안 없음)",applied:false},{ruleId:"POL-AMT-003",name:"금액별 승인",result:"경영진 승인 (1천만~5천만 수의계약)",applied:true},{ruleId:"POL-CMP-001",name:"경쟁 견적 의무",result:"면제 — 수의계약 사유서로 대체",applied:false},{ruleId:"POL-PRICE-001",name:"가격 적정성",result:"⚠️ 시장 참고가 대비 +8% — 임원 Override",applied:true}],
+    evidence:{savings:"절감 해당 없음 (수의계약)",competition:"단일 공급사 — 경쟁 면제",policy:"위원회 심의 + 임원 Override",contract:"OEM 표준 계약 · 하자보증 1년",duration:"7시간 30분"},
+    supplierEvidence:{selected:{name:"OEM 지정업체",score:75,riskLevel:"보통",riskScores:{fin:"Y",del:"G",qual:"Y",esg:"Y"}},runner:null,benchmark:{market:"₩1,710만 (추정 시장가)",previous:"₩1,680만 (2024)",deviation:"+8% (OEM 프리미엄)"},costApproval:"임원 Override 승인"},
+    trace:[{time:"09:05",engine:"T07",agent:"A05",label:"공급사 리스크 스캔",result:"단일 공급사 확인",state:"IN_PROGRESS"},{time:"09:10",engine:"T13",agent:"A08",label:"정책·윤리 점검",result:"⚠️ COI 미확인",state:"HUMAN_REVIEW_REQUIRED"},{time:"09:10",engine:"—",agent:"—",label:"Stop Code 발생",result:"STOP-ETH-001 COI 미확인",state:"EXECUTION_BLOCKED"},{time:"10:30",engine:"—",agent:"—",label:"위원회 심의 요청",result:"수의계약 사유서 접수",state:"HUMAN_REVIEW_REQUIRED"},{time:"14:00",engine:"—",agent:"—",label:"위원회 승인",result:"조건부 승인 (COI 보완)",state:"IN_PROGRESS"},{time:"15:00",engine:"—",agent:"—",label:"COI 서약 완료",result:"Stop Code 해제",state:"IN_PROGRESS"},{time:"15:10",engine:"T15",agent:"A13",label:"AI 최종 안전 점검",result:"HOLD → 가격 +8%",state:"HUMAN_REVIEW_REQUIRED"},{time:"16:00",engine:"—",agent:"—",label:"임원 Override",result:"가격 수용 — 일정 사유",state:"IN_PROGRESS"},{time:"16:20",engine:"T12",agent:"A10",label:"계약 발송",result:"OEM 계약 발송",state:"IN_PROGRESS"},{time:"16:30",engine:"—",agent:"A11",label:"발주 완료",result:"PO 발행",state:"COMPLETED"}],
+    governance:{stopCodes:1,humanReviews:2,overrides:1,escalations:0,details:[{type:"STOP_CODE",time:"09:10",actor:"시스템",decision:"BLOCKED",reason:"STOP-ETH-001: 이해충돌(COI) 서약 미확인"},{type:"HUMAN_REVIEW",time:"10:30~14:00",actor:"수의계약 위원회",decision:"APPROVE",reason:"OEM 독점 사유 인정 · COI 보완 조건"},{type:"OVERRIDE",time:"16:00",actor:"이상무 본부장",decision:"OVERRIDE",reason:"시장가 +8% 수용 — 생산라인 정지 방지. 다음 발주 시 가격 재협상 조건 부여"}]}},
+];
+
+function App(){
+  // ── 화면 모드: execute(BJ 실행) | evidence_list(증적 목록) | evidence_detail(증적 상세) ──
+  const[screenMode,setScreenMode]=useState("execute");
+  const[completedExecs,setCompletedExecs]=useState(MOCK_EVIDENCE); // Mock 4건 + 실행 완료 건 누적
+  const[selectedEvidence,setSelectedEvidence]=useState(null);
+  const[gt,setGt]=useState(null);
+  const[step,setStep]=useState(0);
+  const[msgs,setMsgs]=useState([]);
+  const[done,setDone]=useState(false);
+  const[busy,setBusy]=useState(false);
+  const[steps,setSteps]=useState([]);
+  const[round,setRound]=useState(1);
+  const[sub,setSub]=useState(null);
+  const[auxPanel,setAuxPanel]=useState(null);
+  const[govState,setGovState]=useState(null); // null | "HUMAN_REVIEW" | "STOP"
+  const[govData,setGovData]=useState(null); // { reason, signals, severity, code }
+  const[govReason,setGovReason]=useState("");
+  // 이해충돌 자기확인 → 연 1회 서약제로 전환 (문서 작성 대상: 이해충돌 관리 정책)
+  const[miniStep,setMiniStep]=useState(0); // 카탈로그/반복구매 미니플로우
+  const[miniMode,setMiniMode]=useState(null); // "cat"|"reorder"|null
+  const[docView,setDocView]=useState(false); // 문서관리 패널
+  const[coachMode,setCoachMode]=useState(false); // 코칭 모드: 담당자 없이 직접 진행
+  const[validatedPkg,setValidatedPkg]=useState(null); // v4.0: Screen 12 → 2 핸드오프 데이터
+  const REORDER_ITEMS=[{id:"RO-347",item:"복사용지 A4 10박스",vendor:"오피스디포",amount:"₩42,000",date:"03-17"},{id:"RO-341",item:"노트북 Dell 5대",vendor:"한국사무기기",amount:"₩8,100,000",date:"03-14"},{id:"RO-338",item:"정수기 렌탈 12대",vendor:"코웨이",amount:"₩540,000/월",date:"03-12"}];
+  const ref=useRef(null);
+  /* ── Audit Trail Collector (Audit Trail Data Model v1.1 §5.1) ──
+     모든 Runtime State Transition → AuditTrailEvent 수집
+     BJ 완료 시 Evidence 5-Section 구조로 변환 */
+  const auditRef=useRef({startedAt:null,completedAt:null,trace:[],decisions:[],policyResults:[],governance:{stopCodes:0,humanReviews:0,overrides:0,escalations:0,details:[]},suppliers:[],quotes:[],selection:null,postObligation:null});
+  const now=()=>new Date().toLocaleTimeString("ko-KR",{hour:"2-digit",minute:"2-digit"});
+  const collectEvent=(type,data)=>{const t=now();const a=auditRef.current;
+    if(type==="START"){a.startedAt=t;a.trace=[];a.decisions=[];a.policyResults=[];a.governance={stopCodes:0,humanReviews:0,overrides:0,escalations:0,details:[]};a.suppliers=[];a.quotes=[];a.selection=null;a.postObligation=null;}
+    if(type==="STEP"){a.trace.push({time:t,engine:data.engine||"—",agent:data.agent||"—",label:data.label||"",result:data.result||"",state:data.state||"IN_PROGRESS"});}
+    if(type==="USER_DECISION"){a.decisions.push({time:t,choice:data.choice,stepId:data.stepId});}
+    if(type==="POLICY"){a.policyResults.push({ruleId:data.ruleId||"POL-GEN",name:data.name,result:data.result,applied:data.applied!==false});}
+    if(type==="GOV_REVIEW"){a.governance.humanReviews++;a.governance.details.push({type:"HUMAN_REVIEW",time:t,actor:data.actor||"승인자",decision:data.decision||"APPROVE",reason:data.reason||""});}
+    if(type==="GOV_STOP"){a.governance.stopCodes++;a.governance.details.push({type:"STOP_CODE",time:t,actor:"시스템",decision:"BLOCKED",reason:data.reason||""});}
+    if(type==="SUPPLIER"){a.suppliers=data;}
+    if(type==="QUOTE"){a.quotes=data;}
+    if(type==="SELECTION"){a.selection=data;}
+    if(type==="POST_OBLIGATION"){a.postObligation=data;}
+    if(type==="COMPLETE"){a.completedAt=t;a.trace.push({time:t,engine:"—",agent:"—",label:"구매 완료",result:"COMPLETED",state:"COMPLETED"});}
+  };
+  const buildEvidencePacket=()=>{const a=auditRef.current;const gi=gt?GT_ON[gt]:null;const vp=validatedPkg;return{
+    id:"EXEC-"+Date.now().toString(36).toUpperCase().slice(-6),title:gi?.name||"구매 실행",gt:gt||"—",gtLabel:gi?.name||"—",
+    gtCode:vp?.gtCode||null,btCode:vp?.btCode||null,route:vp?.route||null, // v4.0
+    vendor:a.selection?.winner||"(선정 전)",amount:a.selection?.total?a.selection.total+"점":"—",state:"COMPLETED",
+    requestedAt:a.startedAt||"—",completedAt:a.completedAt||"—",department:"구매팀",requester:coachMode?"김형주 과장":"조성호 과장",
+    processId:{sessionId:"SES-"+Date.now().toString(36).slice(-6),guideType:vp?.gtCode?(vp.gtCode+" "+GT_LABEL[vp.gtCode]):((gt||"").toUpperCase()+" "+(gi?.name||"")),tier:["str","exc"].includes(gt)?"Strategic/Exception":"Operational",category:vp?.category||"BJ 실행 건",intent:"PROCUREMENT",condition:steps.length+"단계 완료"},
+    decisionTrace:a.decisions.map((d,i)=>({time:d.time,event:"사용자 결정 #"+(i+1),detail:d.choice+" ("+d.stepId+")",confidence:Math.min(0.50+i*0.10,0.95)})),
+    policyApplication:a.policyResults.length>0?a.policyResults:[{ruleId:"POL-AUTO",name:"자동 점검",result:"정책 점검 완료",applied:true}],
+    evidence:{savings:"(실행 후 산출)",competition:(a.suppliers?.length||0)+"곳 참여",policy:a.policyResults.filter(p=>p.applied).length+"건 적용",contract:"(계약 후 확정)",duration:a.startedAt&&a.completedAt?a.startedAt+" ~ "+a.completedAt:"—"},
+    supplierEvidence:a.selection?{selected:{name:a.selection.winner,score:a.selection.total,riskLevel:"확인됨",riskScores:{fin:"G",del:"G",qual:"G",esg:"G"}},runner:a.selection.runner?{name:a.selection.runner,score:a.selection.runnerTotal}:null,benchmark:{market:"(시장가 참조)",previous:"—",deviation:"—"},costApproval:"확인됨"}:{selected:null,runner:null,benchmark:{},costApproval:"—"},
+    trace:a.trace,governance:{...a.governance,postObligation:a.postObligation},
+  };};
+  useEffect(()=>{ref.current?.scrollTo({top:ref.current.scrollHeight,behavior:"smooth"})},[msgs]);
+
+  const start=(k,subKey)=>{
+    // 카탈로그: 미니 플로우로 전환
+    if(k==="cat"&&GT_ON.cat.miniFlow){setMiniMode("cat");setMiniStep(0);setDone(false);setScreenMode("execute");collectEvent("START",{});logEvent({from:"READY",to:"IN_PROGRESS",engine:"A05",type:"journey_start",payload:{journeyType:k}});setMsgs([{r:"sys",c:GT_ON.cat.miniFlow[0].ai}]);return;}
+    setMiniMode(null);setScreenMode("execute");collectEvent("START",{});
+    logEvent({from:"READY",to:"IN_PROGRESS",engine:"A05",type:"journey_start",payload:{journeyType:k,subKey:subKey||null}});
+    const st=buildSteps(k,subKey);setGt(k);setSub(subKey||null);setStep(0);setDone(false);setSteps(st);setRound(1);const subName=subKey&&GT_ON[k]?.subs?.[subKey]?" ("+GT_ON[k].subs[subKey]+")":"";const compact=st.length<=3;setMsgs([{r:"sys",c:`${GT_ON[k].name}${subName} 절차를 안내해 드릴게요.\n${compact?st.length+"단계 간소화 절차로 빠르게 진행해요.":st.length+"단계를 거치며, 매 단계마다 확인을 받을게요."}`}]);if(compact&&st.length>1){let delay=800;for(let i=0;i<st.length-1;i++){const si=st[i];const idx=i;((s,ix,d)=>{setTimeout(()=>{setStep(ix);collectEvent("STEP",{engine:s.id,agent:s.agent,label:s.label,result:"자동 처리",state:"IN_PROGRESS"});logEvent({from:"IN_PROGRESS",to:"IN_PROGRESS",engine:s.id,type:"step_auto",payload:{label:s.label}});setMsgs(p=>[...p,{r:"compact",agent:s.agent,color:s.color,c:"✓ "+s.label+": "+s.ai.split("\n")[0]}]);},d);})(si,idx,delay);delay+=600;}setTimeout(()=>{setStep(st.length-1);addS(st[st.length-1],st.length-1);},delay);}else{setTimeout(()=>addS(st[0],0),800);}};
+  /* v4.0: Validated Package → Buying Journey 자동 진입 */
+  const startFromPackage=(pkg)=>{
+    var parsed=parseValidatedPackage(pkg);
+    if(!parsed){
+      setMsgs([{r:"sys",c:"⚠️ 이 건은 구매 실행 대상이 아닙니다.\n\n"+(pkg.gtCode?"GT "+pkg.gtCode+" ("+GT_LABEL[pkg.gtCode]+", 경로 "+(GT_ROUTE[pkg.gtCode]||"?")+")":" GT 미확인")+(pkg.btCode&&BT_META_REF[pkg.btCode]&&BT_META_REF[pkg.btCode].prAllowed===false?"\n→ 주관부서 전담 품목 (PR 작성 불가)":"")}]);
+      return;
+    }
+    setValidatedPkg(parsed);
+    var jt=parsed.journeyType;
+    if(DEV_MODE)console.log("[EXECUTE] Package received:",parsed.gtCode,"→",jt,"route:",parsed.route);
+    var contextMsg="";
+    if(parsed.reqCard){var rc=parsed.reqCard;contextMsg="\n\n📋 인테이크 요약:";if(rc.item)contextMsg+=" "+rc.item;if(rc.qty)contextMsg+=" · "+rc.qty;if(rc.budget)contextMsg+=" · "+rc.budget;if(rc.period)contextMsg+=" · "+rc.period;}
+    if(parsed.contract){contextMsg+="\n📄 계약: "+parsed.contract.vendor+" ("+parsed.contract.contract+")";}
+    start(jt, null);
+    if(contextMsg){setTimeout(()=>setMsgs(p=>[...p,{r:"sys",c:"인테이크에서 전달받은 정보를 반영하여 진행합니다."+contextMsg}]),400);}
+  };;
+  const addS=(s,idx)=>{setBusy(true);setTimeout(()=>{
+    // Audit: 단계 진입 기록 + 공급사/견적/선정 데이터 수집
+    collectEvent("STEP",{engine:s.id,agent:s.agent,label:s.label,result:s.ai?.split("\n")[0]||"",state:"IN_PROGRESS"});
+    logEvent({from:"IN_PROGRESS",to:"IN_PROGRESS",engine:s.id,type:"step_enter",payload:{agent:s.agent,label:s.label,stepIdx:idx}});
+    if(s.suppliers)collectEvent("SUPPLIER",s.suppliers);
+    if(s.quotes)collectEvent("QUOTE",s.quotes);
+    if(s.selection)collectEvent("SELECTION",s.selection);
+    if(s.panel){const checks=s.panel?.sections?.filter(sec=>sec.type==="check");if(checks)checks.forEach(sec=>sec.data?.forEach(c=>collectEvent("POLICY",{name:c.label,result:c.ok?"통과":"미충족",applied:true})));}
+    const newMsgs=[{r:"a",agent:s.agent,color:s.color,c:s.ai,detail:s.detail,suppliers:s.suppliers,quotes:s.quotes,preview:s.preview,selection:s.selection,panel:s.panel,actions:s.actions,wait:s.wait,final:s.final,stepIdx:idx,id:s.id}];
+    setMsgs(p=>[...p,...newMsgs]);setBusy(false);
+  },1200);};
+
+  const pick=(choice,msg)=>{
+    setMsgs(p=>[...p,{r:"u",c:choice}]);
+    setAuxPanel(null);
+    collectEvent("USER_DECISION",{choice,stepId:msg.id||"unknown"}); // Audit
+    logEvent({from:"IN_PROGRESS",to:"IN_PROGRESS",trigger:"user",engine:msg.id||"A05",type:"user_decision",payload:{choice:choice,stepId:msg.id}}); // v4.0
+    const retry=(c,d,acts)=>{setTimeout(()=>setMsgs(p=>[...p,{r:"a",agent:msg.agent,color:msg.color,c,detail:d||"",suppliers:msg.suppliers,quotes:msg.quotes,preview:msg.preview,selection:msg.selection,panel:msg.panel,actions:acts||msg.actions,wait:msg.wait,final:msg.final,stepIdx:msg.stepIdx,id:msg.id}]),600);};
+
+    // ── Fix B: 경쟁 충분성 체크 (A07 비용 분석에서 진행 시) ──
+    if((choice.includes("선정 진행")||choice.includes("이대로 진행"))&&(msg.id==="a07")&&(gt==="rfq"||gt==="svc"||gt==="str")){
+      // 견적 응답 수 체크 (3곳 미만이면 HOLD)
+      const quoteCount=msg.quotes?.length||0;
+      if(quoteCount<3){
+        setAuxPanel({t:"form",title:"⚠️ 경쟁 불충분 — 사유서 작성 필요",fields:[
+          {k:"count",l:"응답 업체 수",df:quoteCount+"곳 (3곳 미만)",disabled:true},
+          {k:"reason",l:"경쟁 불충분 사유",tp:"textarea",p:"미응답 업체 독촉 완료, 마감 연장 후에도 미응답 등",req:true},
+          {k:"sufficient",l:"진행 판단 근거",tp:"textarea",p:"응답 업체 간 가격 차이 10% 이내로 경쟁 실질적 등",req:true},
+          {k:"approval",l:"추가 승인",tp:"select",opts:["부서장 승인 받음","구매팀장 승인 받음","미승인 (승인 요청 필요)"],req:true}
+        ],cb:(d)=>{setAuxPanel(null);if(d.approval?.includes("미승인")){retry("경쟁 불충분 사유서가 작성되었어요.\n추가 승인이 필요합니다. 승인 후 진행해 주세요.","",["승인 완료 후 진행","마감 연장 (3일)","재견적 요청"]);}else{retry("경쟁 불충분 사유서가 승인되었어요.\n사유: "+d.reason+"\n\n응답 업체로 선정을 진행합니다.","",["선정 확정","재견적 요청"]);}}});
+        return;
+      }
+    }
+
+    // ── 이해충돌 자기확인: 연 1회 서약제로 전환 (문서 작성 대상) ──
+    // 건별 팝업 제거. 서약 만료 체크 + 특수 관계 업체 감지는 백엔드 구현 시 적용.
+
+    // ── Fix D: 수의계약 사유서 강화 (A08 exc "사유서 확인 후 진행") ──
+    if(choice==="사유서 확인 후 진행"&&gt==="exc"){
+      setAuxPanel({t:"form",title:"수의계약 사유서 (감사 증적용)",fields:[
+        {k:"sole_reason",l:"① 경쟁 불가 사유",tp:"textarea",p:"해당 부품은 OEM 제조사만 공급 가능하며, 호환 제품이 존재하지 않음. 특허번호: KR-xxxx",req:true},
+        {k:"market_survey",l:"② 대안 업체 조사 결과",tp:"textarea",p:"유사 품목 3곳 조사 결과: A사(호환 불가), B사(인증 미보유), C사(단종)",req:true},
+        {k:"price_evidence",l:"③ 단가 적정성 증빙",tp:"textarea",p:"제조사 공시가 대비 -3%, 이전 구매가(2024.06) 대비 +2%. 시장 조사 결과 첨부.",req:true},
+        {k:"competition_plan",l:"④ 향후 경쟁 전환 계획",tp:"textarea",p:"차기 구매 시 대체품 개발 완료 예정(2027.Q1), 경쟁 입찰 전환 계획",req:true}
+      ],cb:(d)=>{setAuxPanel(null);retry("수의계약 사유서 4개 항목이 모두 작성되었어요.\n\n① 경쟁 불가 사유: "+d.sole_reason.substring(0,30)+"...\n② 대안 조사: 완료\n③ 단가 증빙: 완료\n④ 경쟁 전환 계획: 완료\n\n위원회 상정을 진행하시겠어요?","",["위원회 상정","사유 보완 필요"]);}});
+      return;
+    }
+    // ── 유형A: 검색/선택 ──
+    if(choice==="업체 추가 요청"){setAuxPanel({t:"search",title:"공급사 검색/추가",mode:"add",cb:(ids)=>{setAuxPanel(null);retry("공급사 "+ids.length+"곳이 추가되었어요.\n업체 목록이 갱신되었습니다.","",["이 업체들로 진행","업체 추가 요청","특정 업체 제외"]);}});return;}
+    if(choice==="특정 업체 제외"){setAuxPanel({t:"search",title:"업체 제외 (사유 필수)",mode:"exclude",cb:(ids,reason)=>{setAuxPanel(null);retry("업체 "+ids.length+"곳 제외.\n사유: "+reason,"",["제외 후 재탐색","현재 업체로 진행"]);}});return;}
+    if(choice==="미응답 업체 처리"){setAuxPanel({t:"search",title:"미응답 업체 관리",mode:"unresponsive",cb:()=>{setAuxPanel(null);retry("미응답 업체 처리 완료.","",["응답 업체만으로 진행","마감 연장 (3일)"]);}});return;}
+    // ── 유형B: 폼입력 ──
+    // GT별 특화: 조건 변경
+    if(choice==="조건 변경 요청"||choice==="조건 변경"){
+      if(gt==="con"){setAuxPanel({t:"check",title:"갱신 조건 비교",secs:[{l:"현재 계약 조건",its:[{id:"c1",l:"계약 금액: ₩54만/월 × 12대",d:"시장가 대비 적정 수준"},{id:"c2",l:"계약 기간: 12개월",d:"만료일 4/15"},{id:"c3",l:"납기 준수율: 98%"},{id:"c4",l:"품질 이슈: 0건"},{id:"c5",l:"SLA 충족: 양호"}]},{l:"변경 요청 사항",its:[{id:"v1",l:"대수 변경",d:"현재 12대 → 변경 희망 대수",note:true},{id:"v2",l:"금액 재협상",d:"시장가 변동 -3% 반영 요청",note:true},{id:"v3",l:"서비스 범위 변경",d:"유지보수 포함 여부",note:true}]}],cb:()=>{setAuxPanel(null);retry("갱신 조건 변경 요청이 기록되었어요.\n변경 내용을 반영하여 재견적합니다.","",["변경 후 진행","현재 조건 유지"]);}});return;}
+      if(gt==="sub"){setAuxPanel({t:"check",title:"구독 플랜 비교",secs:[{l:"현재 구독",its:[{id:"s1",l:"플랜: Team",d:"$8/석/월"},{id:"s2",l:"라이선스: 50석",d:"월 $400"},{id:"s3",l:"결제 주기: 연간",d:"연 $4,800"}]},{l:"변경 옵션",its:[{id:"p1",l:"플랜 변경",d:"Team→Business ($15/석) 또는 Free 다운그레이드",note:true},{id:"p2",l:"라이선스 수 변경",d:"현재 50석 → 변경 희망 수",note:true},{id:"p3",l:"결제 주기 변경",d:"월간↔연간 (연간 20% 할인)",note:true}]},{l:"IT 보안 확인",its:[{id:"t1",l:"SSO 연동 상태",d:"현재: 미연동 → 연동 필요 시 Business 플랜 필수",sev:"high"},{id:"t2",l:"데이터 보관 정책",d:"퇴사 시 계정 처리 절차 확인"},{id:"t3",l:"ISMS-P 인증 여부",d:"인증 필요 서비스인지 확인"}]}],cb:()=>{setAuxPanel(null);retry("구독 조건 변경 요청이 기록되었어요.\nIT 보안 검토를 포함하여 진행합니다.","",["변경 후 진행","현재 조건 유지"]);}});return;}
+      // 기본 (RFQ/SVC 등)
+      setAuxPanel({t:"form",title:"요청 조건 편집",fields:[{k:"item",l:"품목명",p:"서버 장비"},{k:"qty",l:"수량",p:"1",tp:"number",u:"대"},{k:"spec",l:"사양",p:"Xeon/64GB/2TB"},{k:"delivery",l:"납기",p:"2주 내"},{k:"budget",l:"예산",p:"50,000,000",tp:"number",u:"원"}],cb:(d)=>{setAuxPanel(null);retry("조건 변경 완료. 견적 요청서에 반영됩니다.","",["조건 변경 후 발송","현재 조건으로 발송"]);}});return;
+    }
+    if(choice==="요청 조건 변경"){setAuxPanel({t:"form",title:"요청 조건 편집",fields:[{k:"item",l:"품목명",p:"서버 장비"},{k:"qty",l:"수량",p:"1",tp:"number",u:"대"},{k:"spec",l:"사양",p:"Xeon/64GB/2TB"},{k:"delivery",l:"납기",p:"2주 내"},{k:"budget",l:"예산",p:"50,000,000",tp:"number",u:"원"}],cb:(d)=>{setAuxPanel(null);retry("조건 변경 완료. 견적 요청서에 반영됩니다.","",["조건 변경 후 발송","현재 조건으로 발송"]);}});return;}
+    // GT별 특화: 가격 재확인 (PR 전용)
+    if(choice==="가격 재확인"){setAuxPanel({t:"check",title:"단가 이력 비교",secs:[{l:"이전 구매 이력",its:[{id:"h1",l:"2024.12 — ₩163만/대 (Dell)",d:"한국사무기기, 납기 1.5주"},{id:"h2",l:"2024.06 — ₩170만/대 (HP)",d:"스마트오피스, 납기 2주"},{id:"h3",l:"2023.11 — ₩158만/대 (Dell)",d:"한국사무기기, 납기 1주"}]},{l:"현재 견적",its:[{id:"n1",l:"이번 견적: ₩160만/대",d:"이전 평균 ₩163만 대비 1.8% 절감",sev:"high"}]},{l:"시장 참고가",its:[{id:"m1",l:"시장가 범위: ₩150만~₩200만",d:"현재 견적은 시장가 하위 범위 — 적정"}]}],cb:()=>{setAuxPanel(null);retry("단가 확인 완료. 이전 대비 적정 수준입니다.","",["이 가격으로 진행","가격 재협상 요청"]);}});return;}
+    // GT별 특화: 긴급 발주 (URG 전용 사유서)
+    if(choice==="긴급 발주 진행"){if(gt==="urg"){setAuxPanel({t:"form",title:"긴급 구매 사유서",fields:[{k:"reason",l:"긴급 사유",tp:"textarea",p:"설비 고장, 안전 사고, 법적 기한 등",req:true},{k:"normal",l:"정상 절차 불가 사유",tp:"textarea",p:"납기 2주 필요하나 즉시 교체 필수",req:true},{k:"plan",l:"사후 처리 계획",tp:"textarea",p:"사후 보고서 3일 내 제출, 정상 발주 병행 등",req:true},{k:"premium",l:"할증 예상",p:"시장가 +10~15%",df:"시장가 +10~15%"}],cb:(d)=>{setAuxPanel(null);setTimeout(()=>setMsgs(p=>[...p,{r:"a",agent:msg.agent,color:msg.color,c:"긴급 구매 사유서가 작성되었어요.\n사유: "+d.reason+"\n\n긴급 발주를 진행합니다. 사후 보고서는 3일 내 제출해주세요.",detail:"",suppliers:msg.suppliers,quotes:msg.quotes,preview:msg.preview,selection:msg.selection,panel:msg.panel,actions:null,wait:msg.wait,final:msg.final,stepIdx:msg.stepIdx,id:msg.id}]),600);}});return;}
+      setTimeout(()=>setMsgs(p=>[...p,{r:"wait",c:msg.wait?.msg||"긴급 발주를 넣었어요.",duration:msg.wait?.dur||"당일",notify:msg.wait?.notify||"출고 완료!",stepIdx:msg.stepIdx,final:msg.final}]),600);return;
+    }
+    // GT별 특화: 위원회 상정 (EXC 전용 수의계약 사유서)
+    if(choice==="위원회 상정"){if(gt==="exc"){setAuxPanel({t:"form",title:"수의계약 사유서 (위원회 심의용)",fields:[{k:"type",l:"독점 사유",tp:"select",opts:["OEM 지정 (호환성)","특허 독점","기술 인증 유일","법적 지정","기타"],req:true},{k:"detail",l:"상세 사유",tp:"textarea",p:"해당 부품은 제조사만 공급 가능하며, 호환 제품이 없음",req:true},{k:"market",l:"시장 조사 결과",tp:"textarea",p:"유사 제품 3곳 조사 결과 및 대체 불가 사유",req:true},{k:"price",l:"가격 적정성 근거",tp:"textarea",p:"이전 구매가 대비, 제조사 공시가 대비 등",req:true},{k:"alt",l:"대안 검토 결과",tp:"textarea",p:"다른 방법을 검토한 결과와 불가 사유"}],cb:(d)=>{setAuxPanel(null);setTimeout(()=>setMsgs(p=>[...p,{r:"a",agent:msg.agent,color:msg.color,c:"수의계약 사유서가 작성되었어요.\n독점 사유: "+d.type+"\n\n위원회 심의를 요청합니다.",detail:"",suppliers:msg.suppliers,quotes:msg.quotes,preview:msg.preview,selection:msg.selection,panel:msg.panel,actions:null,wait:msg.wait,final:msg.final,stepIdx:msg.stepIdx,id:msg.id}]),600);}});return;}
+      setTimeout(()=>setMsgs(p=>[...p,{r:"wait",c:msg.wait?.msg||"위원회 심의를 요청했어요.",duration:msg.wait?.dur||"3~5일",notify:msg.wait?.notify||"승인 완료!",stepIdx:msg.stepIdx,final:msg.final}]),600);return;
+    }
+    // GT별 특화: 재입찰 요청 (폼)
+    if(choice==="재입찰 요청"){setAuxPanel({t:"form",title:"재입찰 설정",fields:[{k:"scope",l:"재입찰 범위",tp:"select",opts:["기존 업체 재참여","기존+신규 업체","전면 재공고"],req:true},{k:"reason",l:"재입찰 사유",tp:"textarea",p:"모든 견적이 예산 20% 초과, 사양 변경 등",req:true},{k:"changes",l:"변경 조건",tp:"textarea",p:"사양 변경, 납기 조정, 예산 변경 등"}],cb:(d)=>{setAuxPanel(null);retry("재입찰 요청이 기록되었어요.\n범위: "+d.scope+"\n사유: "+d.reason+"\n\n견적 요청 단계(A06)부터 재진행합니다.","",["재입찰 시작","현재 결과로 진행"]);}});return;}
+    // GT별 특화: PR 수정 (승인 전 요약 확인)
+    if(choice==="수정 필요"||choice==="수정 후 재요청"){if(gt==="pr"){setAuxPanel({t:"check",title:"PR 요약 확인",secs:[{l:"구매 요약",its:[{id:"pr1",l:"품목: 노트북 Dell Latitude",sev:"high"},{id:"pr2",l:"수량: 5대"},{id:"pr3",l:"단가: ₩160만/대"},{id:"pr4",l:"총액: ₩800만"},{id:"pr5",l:"공급사: 한국사무기기"},{id:"pr6",l:"납기: 1.5주"}]},{l:"승인 경로",its:[{id:"ap1",l:"팀장 승인 → 부서장 승인",d:"예상 당일~1일"}]},{l:"수정 필요 항목",its:[{id:"e1",l:"품목/사양 변경",note:true},{id:"e2",l:"수량 변경",note:true},{id:"e3",l:"공급사 변경",note:true}]}],cb:()=>{setAuxPanel(null);retry("수정 사항이 반영되었어요.\n변경된 PR로 재승인 요청할까요?","",["수정 후 재요청","현재 PR로 진행"]);}});return;}
+      retry("수정 요청이 기록되었어요.\n어떤 부분을 수정하시겠어요?","");return;
+    }
+    // GT별 특화: 검수 진행 (품목군별 차별화)
+    if(choice==="검수 진행"){
+      const itSecs=gt==="pr"?[{l:"IT 장비 확인",its:[{id:"it1",l:"모델번호 대조 (주문서 vs 실물)",sev:"high"},{id:"it2",l:"외관 검사 (스크래치/찍힘)",sev:"high"},{id:"it3",l:"전원 ON + 부팅 테스트",sev:"high"},{id:"it4",l:"OS 설치 및 라이선스 활성화"},{id:"it5",l:"네트워크 연결 테스트"},{id:"it6",l:"주변기기 동작 확인 (키보드/마우스)"}]},{l:"서류",its:[{id:"d1",l:"세금계산서"},{id:"d2",l:"보증서 (3년)"},{id:"d3",l:"매뉴얼"}]}]
+      :gt==="exc"?[{l:"수량",its:[{id:"q1",l:"주문 수량 일치",sev:"high"},{id:"q2",l:"포장 상태"}]},{l:"OEM 부품 검증",its:[{id:"o1",l:"부품 번호 대조 (OEM 정품 확인)",sev:"high"},{id:"o2",l:"규격/사양 일치",sev:"high"},{id:"o3",l:"호환성 테스트",sev:"high"}]},{l:"서류",its:[{id:"d1",l:"세금계산서"},{id:"d2",l:"원산지 증명서"},{id:"d3",l:"정품 인증서"}]}]
+      :[{l:"수량",its:[{id:"q1",l:"주문 수량 일치",sev:"high"},{id:"q2",l:"포장 상태 양호"}]},{l:"품질",its:[{id:"p1",l:"사양 일치 확인",sev:"high"},{id:"p2",l:"파손 없음",sev:"high"},{id:"p3",l:"기능 테스트 통과"}]},{l:"서류",its:[{id:"d1",l:"세금계산서"},{id:"d2",l:"보증서/인증서"},{id:"d3",l:"매뉴얼"}]}];
+      setAuxPanel({t:"check",title:gt==="pr"?"IT 장비 검수":gt==="exc"?"OEM 부품 검수":"납품 검수 체크리스트",upload:true,secs:itSecs,cb:()=>{setAuxPanel(null);retry("검수 완료. 전 항목 확인됨.","",["납품 확인 완료","이슈 보고"]);}});return;
+    }
+    // GT별 특화: 사유 보완 (EXC 단일공급 특화)
+    if(choice==="사유 보완 필요"){
+      const bSecs=gt==="exc"?[{l:"단일공급 증빙",its:[{id:"e1",l:"독점 사유서 (특허/호환/인증)",sev:"high"},{id:"e2",l:"시장 조사 결과 (3곳 이상 비교 불가 증빙)",sev:"high"},{id:"e3",l:"제조사 독점 확인서"},{id:"e4",l:"가격 적정성 증빙 (공시가/이전 구매가)",sev:"high"}]}]
+      :[{l:"보완 항목",its:[{id:"b1",l:"수의계약 사유서",sev:"high"},{id:"b2",l:"시장 조사 결과"},{id:"b3",l:"단가 적정성 증빙",sev:"high"}]}];
+      setAuxPanel({t:"check",title:gt==="exc"?"단일공급 증빙 보완":"보완 필요 항목",upload:true,secs:bSecs,cb:()=>{setAuxPanel(null);retry("보완 완료. 재점검 실행할까요?","",["보완 완료 — 재점검","추가 보완 필요"]);}});return;
+    }
+    if(choice==="가격 재협상 요청"){setAuxPanel({t:"form",title:"가격 재협상",fields:[{k:"target",l:"대상 업체",tp:"select",opts:["대한IT솔루션","미래정보시스템","글로벌테크","전체"]},{k:"price",l:"목표 가격",p:"3,800만원",req:true},{k:"reason",l:"협상 근거",tp:"textarea",p:"이전 구매가 대비, 시장 평균 등",req:true},{k:"deadline",l:"회신 기한",p:"3일 내"}],cb:(d)=>{setAuxPanel(null);retry("재협상 요청이 "+(d.target||"업체")+"에 전달되었어요.","",["재협상 요청 발송","현재 견적으로 진행"]);}});return;}
+    if(choice==="차순위로 변경"){setAuxPanel({t:"form",title:"업체 순위 변경",fields:[{k:"current",l:"현재 1순위",df:"대한IT솔루션 (89점)"},{k:"new",l:"변경 대상",tp:"select",opts:["미래정보시스템 (83점)","글로벌테크 (76점)"]},{k:"reason",l:"변경 사유",tp:"textarea",p:"납기 불가, 기술 재평가 등",req:true}],cb:(d)=>{setAuxPanel(null);retry("차순위 업체("+d.new+")로 변경. 사유: "+d.reason,"",["차순위 업체로 확정","1순위 업체 유지"]);}});return;}
+    if(choice==="예외 승인 요청"){setAuxPanel({t:"form",title:"예외 승인 사유서",fields:[{k:"type",l:"예외 유형",tp:"select",opts:["수의계약","예산 초과","긴급 구매","정책 예외"],req:true},{k:"reason",l:"사유",tp:"textarea",p:"예외 승인이 필요한 사유",req:true},{k:"impact",l:"미승인 시 영향",tp:"textarea",p:"예외 불가 시 예상 영향",req:true},{k:"amount",l:"금액",tp:"number",u:"원",req:true}],cb:(d)=>{setAuxPanel(null);retry("예외 승인 요청 접수. 유형: "+d.type,"",["예외 승인 요청 진행","일반 절차로 진행"]);}});return;}
+    if(choice==="예산 조정 요청"){setAuxPanel({t:"form",title:"예산 조정 요청",fields:[{k:"current",l:"현재 예산",p:"50,000,000원"},{k:"requested",l:"요청 예산",tp:"number",u:"원",req:true},{k:"reason",l:"조정 사유",tp:"textarea",p:"견적 초과, 사양 변경 등",req:true}],cb:(d)=>{setAuxPanel(null);retry("예산 조정 요청이 재무팀에 전달되었어요.","",["예산 조정 요청","현재 예산으로 진행"]);}});return;}
+    if(choice==="이슈 보고"){setAuxPanel({t:"form",title:"이슈 보고",fields:[{k:"type",l:"이슈 유형",tp:"select",opts:["납기 지연","품질 불량","사양 불일치","수량 부족","서류 미비"],req:true},{k:"severity",l:"심각도",tp:"select",opts:["상 (업무 중단)","중 (업무 지장)","하 (불편)"],req:true},{k:"detail",l:"상세 내용",tp:"textarea",p:"이슈 내용",req:true},{k:"action",l:"요청 조치",tp:"select",opts:["교환","수리","재납품","할인 협상"],req:true}],cb:(d)=>{setAuxPanel(null);retry("이슈 보고 완료. "+d.type+" ("+d.severity+")","",["추가 이슈 보고","납품 확인 완료"]);}});return;}
+    // ── 유형C: 비교/분석 ──
+    if(choice==="평가 기준 수정"){setAuxPanel({t:"compare",title:"평가 가중치 편집",items:[{k:"price",l:"가격",v:35},{k:"tech",l:"기술",v:30},{k:"delivery",l:"납기",v:20},{k:"esg",l:"ESG",v:15}],cb:(w)=>{setAuxPanel(null);retry("평가 기준 변경: 가격"+w.price+"%/기술"+w.tech+"%/납기"+w.delivery+"%/ESG"+w.esg+"%","",["기준 수정 후 발송","현재 기준으로 발송"]);}});return;}
+    if(choice==="사양 재확인"){setAuxPanel({t:"check",title:"요청 vs 견적 사양 비교",secs:[{l:"CPU",its:[{id:"cpu",l:"Xeon Silver 이상",d:"대한IT:적합✓ | 글로벌테크:미달✗",sev:"high"}]},{l:"메모리",its:[{id:"ram",l:"64GB DDR4 이상",d:"대한IT:64GB✓ | 글로벌테크:32GB✗",sev:"high"}]},{l:"스토리지",its:[{id:"sto",l:"2TB SSD RAID",d:"전사 적합✓"}]},{l:"보증",its:[{id:"war",l:"보증 2년 이상",d:"대한IT:3년✓ | 글로벌테크:1년✗",sev:"high"}]}],cb:()=>{setAuxPanel(null);retry("사양 확인 완료. 미달 업체 확인됨.","",["사양 미달 업체 제외","현재 견적으로 진행"]);}});return;}
+    // ── 유형D: 체크리스트 ──
+    if(choice==="조항 수정 요청"){setAuxPanel({t:"check",title:"계약 조항 검토",upload:true,secs:[{l:"핵심 조항",its:[{id:"lia",l:"면책·배상 한도",d:"계약금액 100% 이내",note:true,sev:"high"},{id:"term",l:"해지 조건",d:"30일 사전 통보",note:true,sev:"high"},{id:"pay",l:"지급 조건",d:"납품 후 30일",note:true},{id:"sla",l:"SLA 조건",d:"가용성 99.9%",note:true}]},{l:"부속 조항",its:[{id:"war2",l:"하자보증 기간",d:"2년",note:true},{id:"ip",l:"지식재산권",d:"발주사 귀속"},{id:"nda",l:"비밀유지",d:"종료 후 3년"}]}],cb:()=>{setAuxPanel(null);retry("계약 조항 검토 완료. 수정 요청 기록됨.","",["수정 후 재발송","현재 조항으로 발송"]);}});return;}
+    if(choice==="법무 검토 요청"){setAuxPanel({t:"check",title:"법무 검토 요청",upload:true,secs:[{l:"검토 항목",its:[{id:"l1",l:"면책/배상 조항",sev:"high"},{id:"l2",l:"해지 조건 적정성"},{id:"l3",l:"지재권 귀속"},{id:"l4",l:"비밀유지 범위"},{id:"l5",l:"분쟁 해결 조항"}]}],cb:()=>{setAuxPanel(null);retry("법무 검토 요청 접수. 리스크 항목 중점 검토.","",["법무 검토 요청","현재 조항으로 진행"]);}});return;}
+    if(choice==="검수 진행"){setAuxPanel({t:"check",title:"납품 검수 체크리스트",upload:true,secs:[{l:"수량",its:[{id:"q1",l:"주문 수량 일치",sev:"high"},{id:"q2",l:"포장 상태 양호"}]},{l:"품질",its:[{id:"p1",l:"사양 일치 확인",sev:"high"},{id:"p2",l:"파손 없음",sev:"high"},{id:"p3",l:"기능 테스트 통과"}]},{l:"서류",its:[{id:"d1",l:"세금계산서"},{id:"d2",l:"보증서/인증서"},{id:"d3",l:"매뉴얼"}]}],cb:()=>{setAuxPanel(null);retry("검수 완료. 전 항목 확인됨.","",["납품 확인 완료","이슈 보고"]);}});return;}
+    if(choice==="사유 보완 필요"){setAuxPanel({t:"check",title:"보완 필요 항목",upload:true,secs:[{l:"보완 항목",its:[{id:"b1",l:"수의계약 사유서",sev:"high"},{id:"b2",l:"시장 조사 결과"},{id:"b3",l:"단가 적정성 증빙",sev:"high"}]}],cb:()=>{setAuxPanel(null);retry("보완 완료. 재점검 실행할까요?","",["보완 완료 — 재점검","추가 보완 필요"]);}});return;}
+    if(choice==="독촉 메일 발송"){retry("미응답 업체에 독촉 메일을 보냈어요.\n회신이 오면 알려드릴게요.","",["응답 대기","응답 업체만으로 진행"]);return;}
+    if(choice==="마감 연장 (3일)"){retry("견적 마감을 3일 연장했어요.\n연장 기한 내 회신이 오면 알려드릴게요.","",["응답 대기","응답 업체만으로 진행"]);return;}
+    if(choice==="응답 업체만으로 진행"||choice==="응답 대기"){goNext(msg);return;}
+    if(choice==="사양 미달 업체 제외"){setAuxPanel({t:"search",title:"사양 미달 업체 제외",mode:"exclude",cb:(ids,reason)=>{setAuxPanel(null);retry("사양 미달 업체 "+ids.length+"곳 제외.\n사유: "+reason+"\n남은 업체로 재평가합니다.","",["이대로 선정 진행","가격 재협상 요청"]);}});return;}
+    if(choice==="추가 보완 필요"){setAuxPanel({t:"check",title:"추가 보완 항목",upload:true,secs:[{l:"보완 항목",its:[{id:"ab1",l:"미비 서류 보완",note:true},{id:"ab2",l:"추가 증빙 첨부",note:true},{id:"ab3",l:"사유서 수정",note:true}]}],cb:()=>{setAuxPanel(null);retry("추가 보완이 기록되었어요.\n재점검 실행할까요?","",["보완 완료 — 재점검","추가 보완 필요"]);}});return;}
+    if(choice==="추가 이슈 보고"){setAuxPanel({t:"form",title:"추가 이슈 보고",fields:[{k:"type",l:"이슈 유형",tp:"select",opts:["납기 지연","품질 불량","사양 불일치","수량 부족","서류 미비"],req:true},{k:"severity",l:"심각도",tp:"select",opts:["상 (업무 중단)","중 (업무 지장)","하 (불편)"],req:true},{k:"detail",l:"상세 내용",tp:"textarea",p:"이슈 내용",req:true},{k:"action",l:"요청 조치",tp:"select",opts:["교환","수리","재납품","할인 협상"],req:true}],cb:(d)=>{setAuxPanel(null);retry("추가 이슈 보고 완료. "+d.type+" ("+d.severity+")","",["추가 이슈 보고","납품 확인 완료"]);}});return;}
+    if(choice.includes("재탐색")||choice.includes("재견적")||choice.includes("재입찰")||choice.includes("재협상")||choice.includes("재발송")||choice.includes("재점검")){setRound(r=>r+1);retry("변경 내용이 기록되었어요. 반영해서 다시 분석을 실행해요.\n잠시만 기다려 주세요. (Round "+(round+1)+")","");return;}
+    if(choice==="보완 완료 — 재점검"){setRound(r=>r+1);setTimeout(()=>setMsgs(p=>[...p,{r:"a",agent:msg.agent,color:msg.color,c:"보완 내용이 확인되었어요.\n\nAI 재검증 결과, 모든 항목이 통과되었어요. GO 판정으로 전환돼요.\n\n다음 단계로 진행하시겠어요?",detail:"",suppliers:null,quotes:null,preview:null,selection:null,panel:{title:"GO / HOLD / STOP 판정",sections:[{label:"종합 판정",type:"info",data:"GO — 보완 완료, 전 항목 통과"},{label:"항목별 체크",type:"check",data:[{label:"정책 적합성",ok:true},{label:"비용 적정성",ok:true},{label:"공급사 리스크",ok:true},{label:"계약 조건 합의",ok:true},{label:"예산 확보",ok:true},{label:"경쟁 충분성",ok:true}]},{label:"증빙 확인",type:"check",data:[{label:"DEI 인증서 첨부",ok:true},{label:"IT Security 규정 확인서",ok:true}]}]},actions:["GO 확인 — 진행"],wait:msg.wait,final:msg.final,stepIdx:msg.stepIdx,id:msg.id}]),600);return;}
+    if(choice.includes("HOLD")){setGovState("HUMAN_REVIEW");collectEvent("GOV_REVIEW",{actor:"검토자",decision:"PENDING",reason:"리스크 수용 여부 확인 필요"});logEvent({from:"IN_PROGRESS",to:"HUMAN_REVIEW_REQUIRED",engine:"A13",type:"governance_hold",payload:{reason:"리스크 수용 여부 확인 필요"}});setGovData({reason:"리스크 수용 여부 확인 필요",severity:"SOFT",signals:[{k:"정책 적합성",v:"통과",ok:true},{k:"비용 적정성",v:"통과",ok:true},{k:"공급사 리스크",v:"미확인",ok:false},{k:"DEI 인증",v:"미확인",ok:false}]});setGovReason("");setMsgs(p=>[...p,{r:"gov",c:"HUMAN_REVIEW_REQUIRED — 검토자 판단이 필요합니다.",govType:"review"}]);return;}
+    if(choice==="DEI 인증 확인 완료"||choice==="IT Security 확인 완료"){retry(choice.replace(" 완료","")+" 증빙이 기록되었어요.\n\n나머지 항목도 보완되면 재점검을 실행해요.","",["전체 보완 완료 — 재점검","추가 항목 보완","현재 상태로 진행"]);return;}
+    if(choice==="전체 보완 완료 — 재점검"){setRound(r=>r+1);setTimeout(()=>setMsgs(p=>[...p,{r:"a",agent:msg.agent,color:msg.color,c:"전체 보완 내용과 증빙이 확인되었어요.\n\nAI 재검증 결과, 모든 항목이 통과되었어요. GO 판정으로 전환돼요.",detail:"",suppliers:null,quotes:null,preview:null,selection:null,panel:{title:"GO / HOLD / STOP 판정",sections:[{label:"종합 판정",type:"info",data:"GO — 보완 완료, 전 항목 통과"},{label:"항목별 체크",type:"check",data:[{label:"정책 적합성",ok:true},{label:"비용 적정성",ok:true},{label:"공급사 리스크",ok:true},{label:"계약 조건 합의",ok:true},{label:"예산 확보",ok:true},{label:"경쟁 충분성",ok:true}]},{label:"증빙 확인",type:"check",data:[{label:"DEI 인증서 첨부",ok:true},{label:"IT Security 규정 확인서",ok:true}]}]},actions:["GO 확인 — 진행"],wait:msg.wait,final:msg.final,stepIdx:msg.stepIdx,id:msg.id}]),600);return;}
+    if(choice.includes("STOP")||choice==="중단"){setGovState("STOP");collectEvent("GOV_STOP",{reason:choice==="중단"?"사용자 중단 요청":"정책 위반 또는 리스크 초과"});logEvent({from:"IN_PROGRESS",to:"EXECUTION_BLOCKED",engine:"A13",type:"governance_stop",payload:{reason:choice}});setGovData({reason:choice==="중단"?"사용자 중단 요청":"정책 위반 또는 리스크 초과",severity:"HARD",code:"STOP-GOV-001",signals:[{k:"중단 사유",v:choice,ok:false}]});setGovReason("");setMsgs(p=>[...p,{r:"gov",c:"EXECUTION_BLOCKED — 실행이 차단되었습니다.",govType:"stop"}]);return;}
+    if(msg.wait&&(choice.includes("진행")||choice.includes("발송")||choice.includes("이동")||choice.includes("올릴")||choice.includes("갱신")||choice.includes("상정")||choice.includes("확정"))){setTimeout(()=>setMsgs(p=>[...p,{r:"wait",c:msg.wait.msg,duration:msg.wait.dur,notify:msg.wait.notify,stepIdx:msg.stepIdx,final:msg.final}]),600);return;}
+    goNext(msg);
+  };
+  const goNext=(msg)=>{if(msg.final){collectEvent("COMPLETE",{});logEvent({from:"IN_PROGRESS",to:"COMPLETED",engine:"A11",type:"journey_complete",payload:{journeyType:gt}});setTimeout(()=>{
+    const packet=buildEvidencePacket();
+    setCompletedExecs(p=>[...p,packet]); // 누적
+    setMsgs(p=>[...p,{r:"done",c:"구매 절차가 완료되었어요.\n전체 진행 이력이 저장되었습니다. 진행 상황은 알림으로 안내해 드릴게요.",evidenceId:packet.id}]);setDone(true);},800);}else{const nx=msg.stepIdx+1;if(nx<steps.length){setStep(nx);setRound(1);setTimeout(()=>addS(steps[nx],nx),600);}}};
+  const onNotify=(msg)=>{
+    setMsgs(p=>[...p,{r:"notify",c:msg.notify}]);
+    // ── 견적 봉인: A06 견적 도착 시 바로 다음 단계로 가지 않고 봉인 상태 표시 ──
+    const curStep=steps[msg.stepIdx];
+    if(curStep&&curStep.id==="a06"){
+      setTimeout(()=>setMsgs(p=>[...p,{r:"sealed",c:"🔒 견적이 봉인 상태입니다.\n\n경쟁 입찰의 공정성을 위해 마감일 전까지 개별 견적 내용을 확인할 수 없습니다.\n도착한 견적은 안전하게 보관되어 있습니다.\n\n마감일이 도래하면 개봉하여 비용 분석을 시작합니다.",stepIdx:msg.stepIdx,final:msg.final}]),600);
+      return;
+    }
+    if(msg.final){collectEvent("COMPLETE",{});setTimeout(()=>{const packet=buildEvidencePacket();setCompletedExecs(p=>[...p,packet]);setMsgs(p=>[...p,{r:"done",c:"구매 절차가 완료되었어요!"}]);setDone(true);},800);}
+    else{const nx=msg.stepIdx+1;if(nx<steps.length){setStep(nx);setRound(1);setTimeout(()=>addS(steps[nx],nx),800);}}
+  };
+  const unsealQuotes=(msg)=>{
+    setMsgs(p=>[...p,{r:"u",c:"마감 완료 — 견적 개봉"}]);
+    setTimeout(()=>setMsgs(p=>[...p,{r:"notify",c:"🔓 견적이 개봉되었습니다. 비용 분석을 시작합니다."}]),400);
+    const nx=msg.stepIdx+1;
+    if(nx<steps.length){setStep(nx);setRound(1);setTimeout(()=>addS(steps[nx],nx),1000);}
+  };
+  const reset=()=>{setGt(null);setMsgs([]);setDone(false);setStep(0);setSteps([]);setRound(1);setSub(null);setAuxPanel(null);setGovState(null);setGovData(null);setGovReason("");setMiniMode(null);setMiniStep(0);setDocView(false);setCoachMode(false);setBusy(false);setValidatedPkg(null);};
+
+  /* ─── Render ─── */
+  return(
+    <div style={{width:"100%",height:"100%",background:"#E8ECF1",display:"flex",flexDirection:"column",fontFamily:T.font.sans,overflow:"hidden"}}>
+      {/* ERP Background Bar */}
+      <div style={{height:28,background:"#2D3748",display:"flex",alignItems:"center",padding:"0 14px",gap:6,flexShrink:0}}>
+        <div style={{display:"flex",gap:4}}><div style={{width:8,height:8,borderRadius:4,background:"#FC5C65"}}/><div style={{width:8,height:8,borderRadius:4,background:"#FED330"}}/><div style={{width:8,height:8,borderRadius:4,background:"#26DE81"}}/></div>
+        <span style={{color:"#A0AEC0",fontSize:10,fontWeight:500,marginLeft:8}}>AI Embedded BSM — Buying Journey{validatedPkg?" · "+validatedPkg.gtCode+" ("+GT_LABEL[validatedPkg.gtCode]+") · Route "+validatedPkg.route:""}</span>
+        <button onClick={()=>setScreenMode("evidence_list")} style={{marginLeft:"auto",padding:"2px 10px",borderRadius:4,border:"1px solid #4A5568",background:"transparent",color:"#A0AEC0",fontSize:10,cursor:"pointer",fontWeight:500}}>📋 Evidence ({completedExecs.length})</button>
+      </div>
+      {/* Floating Card */}
+      <div style={{flex:1,display:"flex",alignItems:"center",justifyContent:"center",padding:12,overflow:"hidden"}}>
+      <div style={{width:"100%",maxWidth:1020,height:"100%",maxHeight:"85%",display:"flex",flexDirection:"column",borderRadius:T.radius.xl,overflow:"hidden",boxShadow:T.shadow.overlay,background:T.surface}}>
+
+        {/* Header */}
+        <div style={{background:`linear-gradient(135deg,${T.brand},${T.brandLt})`,color:T.text.inverse,padding:"10px 20px",display:"flex",alignItems:"center",justifyContent:"space-between",flexShrink:0}}>
+          <div style={{display:"flex",alignItems:"center",gap:10}}>
+            <div style={{width:28,height:28,borderRadius:T.radius.sm,background:"rgba(255,255,255,.15)",display:"flex",alignItems:"center",justifyContent:"center",fontSize:14}}>🏭</div>
+            <span style={{fontWeight:700,fontSize:17,letterSpacing:-0.5}}>Buying Journey</span>
+          </div>
+          <div style={{display:"flex",alignItems:"center",gap:10}}>
+            {gt&&<button onClick={reset} style={{padding:"4px 12px",borderRadius:T.radius.sm,border:"1px solid rgba(255,255,255,.3)",background:"transparent",color:T.text.inverse,fontSize:12,cursor:"pointer",fontWeight:500}}>처음으로</button>}
+            {coachMode&&<span style={{fontSize:10,padding:"3px 8px",borderRadius:T.radius.full,background:"rgba(245,158,11,.8)",color:"#FFF",fontWeight:700}}>📖 코칭 모드</span>}
+            <span style={{fontSize:13,opacity:.7}}>{coachMode?"김형주 과장 (직접 진행)":"조성호 과장"}</span>
+          </div>
+        </div>
+
+        {/* Progress Bar — GT별 색상 + 전이 사유 */}
+        {steps.length>0&&(()=>{const gc=GT_COLOR[gt]||T.state.complete;const curId=steps[Math.min(step,steps.length-1)]?.id;return <div style={{padding:"8px 20px 10px",background:gc.bg,borderBottom:`2px solid ${gc.accent}`,flexShrink:0,transition:"all .3s"}}>
+          <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:6}}>
+            <div style={{width:10,height:10,borderRadius:5,background:gc.accent}}/>
+            <span style={{fontSize:16,fontWeight:700,color:gc.fg,letterSpacing:-0.3}}>{GT_ON[gt]?.name}{sub&&GT_ON[gt]?.subs?.[sub]?` (${GT_ON[gt].subs[sub]})`:""}</span>
+            <Badge color={gc.fg} bg={gc.accent+"30"}>{steps.length}단계 중 {Math.min(step+1,steps.length)}단계</Badge>
+            {round>1&&<Badge color={T.state.review.fg} bg={T.state.review.bg}>Round {round}</Badge>}
+            {DEV_MODE&&validatedPkg&&<Badge color="#5B21B6" bg="#EDE9FE">{validatedPkg.gtCode} · {validatedPkg.btCode||"—"} · Route {validatedPkg.route}</Badge>}
+            {curId&&STEP_REASON[curId]&&!done&&<span style={{fontSize:11,color:gc.fg,fontWeight:500,marginLeft:"auto",padding:"2px 10px",borderRadius:T.radius.full,background:gc.accent+"20",border:`1px solid ${gc.border}`}}>{STEP_REASON[curId]}</span>}
+          </div>
+          <div style={{display:"flex",gap:3}}>
+            {steps.map((s,i)=>{
+              const isDone=i<step||done;const isActive=i===step&&!done;
+              const col=isDone?gc.accent:isActive?gc.accent:T.border.light;
+              return <div key={i} style={{flex:1,display:"flex",flexDirection:"column",alignItems:"center",gap:3}}>
+                <div style={{width:"100%",height:isDone||isActive?5:3,borderRadius:2,background:col,transition:"all .3s",opacity:isActive?1:isDone?0.7:0.3}}/>
+                <span style={{fontSize:10,fontWeight:isActive?700:400,color:isDone?gc.fg:isActive?gc.fg:T.text.muted,letterSpacing:-0.2,transition:"all .3s"}}>{s.label}</span>
+              </div>;})}
+          </div>
+        </div>;})()}
+
+        {/* Main Content */}
+        <div style={{flex:1,display:"flex",overflow:"hidden"}}>
+
+          {/* Left: Chat */}
+          <div style={{flex:1,display:"flex",flexDirection:"column",background:T.surfAlt}}>
+            <div ref={ref} style={{flex:1,overflowY:"auto",padding:"14px 20px",display:"flex",flexDirection:"column",gap:12}}>
+
+              {/* GT Selection */}
+              {!gt&&!miniMode&&<div style={{display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"flex-start",flex:1,overflowY:"auto",paddingTop:20}}>
+                <div style={{width:48,height:48,borderRadius:T.radius.lg,background:`linear-gradient(135deg,${T.brand},${T.brandLt})`,display:"flex",alignItems:"center",justifyContent:"center",fontSize:22,marginBottom:12}}>🏭</div>
+                <p style={{fontSize:22,fontWeight:700,color:T.text.primary,margin:"0 0 4px",letterSpacing:-0.5}}>{coachMode?"구매 진행 (김형주 과장 · 직접)":"구매 실행 (조성호 과장)"}</p>
+                <p style={{fontSize:14,color:T.text.muted,margin:"0 0 16px"}}>{coachMode?"코칭 모드 · 매 단계마다 안내가 함께 제공됩니다":"Buying Journey · A05~A13 · Governance 내장 · 문서관리"}</p>
+
+                {/* 코칭 모드 토글 */}
+                <div onClick={()=>setCoachMode(!coachMode)} style={{display:"flex",alignItems:"center",gap:8,marginBottom:12,padding:"8px 14px",borderRadius:T.radius.md,border:`2px solid ${coachMode?"#F59E0B":T.border.light}`,background:coachMode?"#FFFBEB":T.surface,cursor:"pointer"}}>
+                  <div style={{width:36,height:20,borderRadius:10,background:coachMode?"#F59E0B":T.border.medium,position:"relative",transition:"all .2s"}}>
+                    <div style={{width:16,height:16,borderRadius:8,background:"#FFF",position:"absolute",top:2,left:coachMode?18:2,transition:"all .2s"}}/>
+                  </div>
+                  <span style={{fontSize:13,fontWeight:600,color:coachMode?"#92400E":T.text.muted}}>📖 코칭 모드 {coachMode?"ON":"OFF"}</span>
+                  <span style={{fontSize:11,color:T.text.muted}}>{coachMode?"담당자 없이 직접 진행 — 매 단계마다 가이드 제공":"구매 전문가가 아닌 분은 ON으로 설정하세요"}</span>
+                </div>
+
+                {/* 모드 토글: 구매 진행 / 문서관리 */}
+                <div style={{display:"flex",gap:4,marginBottom:16,padding:3,borderRadius:T.radius.lg,background:T.surfAlt,border:`1px solid ${T.border.light}`}}>
+                  <button onClick={()=>setDocView(false)} style={{flex:1,padding:"8px 16px",borderRadius:T.radius.md,border:"none",fontSize:13,fontWeight:600,cursor:"pointer",background:!docView?T.brand:"transparent",color:!docView?"#FFF":T.text.muted,letterSpacing:-0.2}}>구매 진행</button>
+                  <button onClick={()=>setDocView(true)} style={{flex:1,padding:"8px 16px",borderRadius:T.radius.md,border:"none",fontSize:13,fontWeight:600,cursor:"pointer",background:docView?T.brand:"transparent",color:docView?"#FFF":T.text.muted,letterSpacing:-0.2}}>문서관리 ({DOC_ITEMS.filter(d=>d.status!=="done").length}건)</button>
+                </div>
+
+                {docView ? (
+                  /* ── 문서관리 패널 ── */
+                  <div style={{width:"100%",maxWidth:700,paddingBottom:20}}>
+                    {/* 요약 */}
+                    <div style={{display:"flex",gap:8,marginBottom:14}}>
+                      {Object.entries(DOC_STATUS_LABEL).map(([k,v])=>{const cnt=DOC_ITEMS.filter(d=>d.status===k).length;return cnt>0&&<div key={k} style={{padding:"8px 14px",borderRadius:T.radius.md,background:T.surfAlt,border:`1px solid ${T.border.light}`,flex:1,textAlign:"center"}}>
+                        <div style={{fontSize:18,fontWeight:700,color:DOC_STATUS_COLOR[k]}}>{cnt}</div>
+                        <div style={{fontSize:11,color:T.text.muted}}>{v}</div>
+                      </div>;})}
+                    </div>
+
+                    {/* 우선순위 범례 */}
+                    <div style={{display:"flex",gap:12,marginBottom:14,fontSize:11,color:T.text.muted}}>
+                      <span>우선순위: </span>
+                      {[{p:1,l:"1순위 (백엔드 착수 전)"},{p:2,l:"2순위 (감사 대응)"},{p:3,l:"3순위 (조직 정책)"},{p:4,l:"4순위 (고급 기능)"}].map(x=>
+                        <span key={x.p} style={{display:"flex",alignItems:"center",gap:3}}>
+                          <span style={{width:8,height:8,borderRadius:4,background:x.p===1?"#EF4444":x.p===2?"#F59E0B":x.p===3?"#3B82F6":"#64748B"}}/>
+                          {x.l}
+                        </span>
+                      )}
+                    </div>
+
+                    {/* 문서 목록 */}
+                    {[1,2,3,4].map(pri=>{
+                      const items=DOC_ITEMS.filter(d=>d.priority===pri);
+                      if(!items.length)return null;
+                      const priColor=pri===1?"#EF4444":pri===2?"#F59E0B":pri===3?"#3B82F6":"#64748B";
+                      const priLabel=pri===1?"1순위 — 백엔드 착수 전 필수":pri===2?"2순위 — 감사 대응":pri===3?"3순위 — 조직 정책":"4순위 — 고급 기능";
+                      return <div key={pri} style={{marginBottom:14}}>
+                        <div style={{fontSize:12,fontWeight:600,color:priColor,marginBottom:8,display:"flex",alignItems:"center",gap:6}}>
+                          <span style={{width:10,height:10,borderRadius:5,background:priColor}}/>
+                          {priLabel}
+                        </div>
+                        {items.map(doc=>(
+                          <div key={doc.id} style={{padding:"12px 14px",borderRadius:T.radius.md,border:`1px solid ${T.border.light}`,background:T.surface,marginBottom:6}}>
+                            <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",marginBottom:6}}>
+                              <div style={{display:"flex",alignItems:"center",gap:8}}>
+                                <span style={{fontSize:11,fontWeight:700,color:T.text.muted,width:24}}>{doc.id}</span>
+                                <div>
+                                  <div style={{fontSize:14,fontWeight:600,color:T.text.primary,letterSpacing:-0.3}}>{doc.title}</div>
+                                  <div style={{fontSize:11,color:T.text.muted,marginTop:1}}>{doc.ver} · {doc.ref}</div>
+                                </div>
+                              </div>
+                              <div style={{display:"flex",alignItems:"center",gap:6}}>
+                                <span style={{fontSize:10,padding:"2px 8px",borderRadius:10,background:doc.type==="new"?"#FEF2F2":doc.type==="gap"?"#FFF7ED":"#EFF6FF",color:doc.type==="new"?"#991B1B":doc.type==="gap"?"#9A3412":"#1E40AF",fontWeight:600,border:`1px solid ${doc.type==="new"?"#FCA5A5":doc.type==="gap"?"#FDBA74":"#93C5FD"}`}}>{doc.type==="new"?"신규 작성":doc.type==="gap"?"Gap":"버전업"}</span>
+                                <span style={{fontSize:10,padding:"2px 8px",borderRadius:10,fontWeight:600,color:"#FFF",background:DOC_STATUS_COLOR[doc.status]}}>{DOC_STATUS_LABEL[doc.status]}</span>
+                              </div>
+                            </div>
+                            <div style={{fontSize:12,color:T.text.secondary,lineHeight:1.6,marginBottom:6,paddingLeft:32}}>{doc.scope}</div>
+                            <div style={{display:"flex",gap:6,paddingLeft:32}}>
+                              <span style={{fontSize:10,padding:"2px 8px",borderRadius:6,background:T.surfAlt,border:`1px solid ${T.border.light}`,color:T.text.muted}}>담당: {doc.owner}</span>
+                            </div>
+                          </div>
+                        ))}
+                      </div>;
+                    })}
+
+                    {/* 연관 설계문서 참조 */}
+                    <div style={{padding:"12px 14px",borderRadius:T.radius.md,background:T.state.progress.bg,border:`1px solid ${T.state.progress.border}`,marginTop:10}}>
+                      <div style={{fontSize:12,fontWeight:600,color:T.state.progress.fg,marginBottom:4}}>연관 설계문서 (기 작성 완료)</div>
+                      <div style={{fontSize:11,color:T.state.progress.fg,lineHeight:1.7}}>
+                        Stop Code Governance v1.0 · Audit Trail v1.1 · DB Schema v1.1 (20개 테이블) · Compliance Evidence v1.0 · Control Profile v1.0 · Cost Benchmark v1.0 · LITE MVP Screen Flow v1.0
+                      </div>
+                    </div>
+                  </div>
+                ) : (<>
+
+                {/* 반복 구매 단축 */}
+                <div style={{width:"100%",maxWidth:640,marginBottom:20,padding:"14px 18px",borderRadius:T.radius.lg,background:T.state.progress.bg,border:`1px solid ${T.state.progress.border}`}}>
+                  <div style={{fontSize:13,fontWeight:600,color:T.state.progress.fg,marginBottom:8}}>지난 주문 다시 하기</div>
+                  <div style={{display:"flex",gap:8,flexWrap:"wrap"}}>
+                    {REORDER_ITEMS.map(ro=><button key={ro.id} onClick={()=>{setMiniMode("reorder");setMiniStep(0);setMsgs([{r:"sys",c:`이전 주문을 가져왔어요.\n\n품목: ${ro.item}\n공급사: ${ro.vendor}\n금액: ${ro.amount}\n\n그대로 주문하시겠어요?`}]);}} style={{padding:"8px 14px",borderRadius:T.radius.md,border:`1px solid ${T.state.progress.border}`,background:T.surface,cursor:"pointer",textAlign:"left",flex:"1 0 180px"}}>
+                      <div style={{fontSize:13,fontWeight:600,color:T.text.primary,letterSpacing:-0.2}}>{ro.item}</div>
+                      <div style={{fontSize:11,color:T.text.muted,marginTop:2}}>{ro.vendor} · {ro.amount}</div>
+                    </button>)}
+                  </div>
+                </div>
+
+                {/* v4.0: Validated Package 수신 데모 (Screen 12 → Screen 2 핸드오프) */}
+                <div style={{width:"100%",maxWidth:640,marginBottom:20,padding:"14px 18px",borderRadius:T.radius.lg,background:"#EDE9FE",border:"1px solid #C4B5FD"}}>
+                  <div style={{fontSize:13,fontWeight:600,color:"#5B21B6",marginBottom:4}}>인테이크 완료 건 (Screen 12 → 실행)</div>
+                  <div style={{fontSize:11,color:"#7C3AED",marginBottom:8}}>Validated Package 핸드오프 시뮬레이션 — GT 코드 → journey type 자동 변환</div>
+                  <div style={{display:"flex",gap:8,flexWrap:"wrap"}}>
+                    {[
+                      {label:"서버 장비 RFQ",gtCode:"G11",btCode:"BT-E",reqCard:{item:"서버 장비",qty:"2대",budget:"4200만원",period:"2주"},category:"IT 인프라"},
+                      {label:"노트북 5대 PR",gtCode:"G06",btCode:"BT-E",reqCard:{item:"노트북",qty:"5대",budget:"800만원"},category:"IT 장비"},
+                      {label:"청소 서비스 계약 갱신",gtCode:"G18",btCode:"BT-H",reqCard:{item:"청소 서비스",period:"12개월"},contract:{vendor:"클린원",contract:"SVC-2024-008",manager:"총무팀 최과장"},category:"시설관리"},
+                      {label:"클라우드 전환 (전략)",gtCode:"G34",btCode:"BT-F",reqCard:{item:"클라우드 전환",budget:"2억",period:"3개월"},category:"IT 인프라"},
+                      {label:"긴급 안전장비",gtCode:"G31",btCode:"BT-K",reqCard:{item:"화재 감지기",qty:"10개"},category:"안전장비"},
+                      {label:"SaaS 구독 추가",gtCode:"G27",btCode:"BT-J",reqCard:{item:"Slack 라이선스",qty:"10석"},contract:{vendor:"Slack",contract:"SUB-2024-005",manager:"IT팀 박과장"},category:"SaaS"},
+                      {label:"OEM 부품 수의계약",gtCode:"G32",btCode:"BT-G",reqCard:{item:"OEM 센서 모듈",qty:"50개",budget:"1500만원"},category:"전자부품"},
+                      {label:"주관부서 건 (차단 테스트)",gtCode:"G23",btCode:"BT-C",reqCard:{item:"시설관리"},category:"시설관리"},
+                    ].map((pkg,i)=><button key={i} onClick={()=>startFromPackage(pkg)} style={{padding:"8px 12px",borderRadius:T.radius.md,border:"1px solid #C4B5FD",background:T.surface,cursor:"pointer",textAlign:"left",flex:"1 0 160px"}}>
+                      <div style={{fontSize:12,fontWeight:600,color:T.text.primary,letterSpacing:-0.2}}>{pkg.label}</div>
+                      <div style={{fontSize:10,color:"#7C3AED",marginTop:2}}>{pkg.gtCode} → {gtCodeToJourneyType(pkg.gtCode)||"차단"} · {pkg.btCode}</div>
+                    </button>)}
+                  </div>
+                </div>
+
+                <div style={{display:"flex",flexWrap:"wrap",gap:10,justifyContent:"center",maxWidth:640,paddingBottom:20}}>
+                  {Object.entries(GT_ON).map(([k,v])=>v.subs?<div key={k} style={{display:"flex",flexDirection:"column",gap:4,minWidth:140}}>
+                    <div onClick={()=>start(k)} style={{padding:"10px 14px",borderRadius:`${T.radius.md}px ${T.radius.md}px 4px 4px`,border:`1px solid ${T.border.medium}`,background:T.surface,textAlign:"center",cursor:"pointer"}}>
+                      <div style={{fontSize:14,fontWeight:600,color:T.text.primary,letterSpacing:-0.3}}>{v.name}</div>
+                      <div style={{fontSize:11,color:T.text.muted,marginTop:2}}>{v.on.length}단계 · 품목군 선택 ↓</div>
+                    </div>
+                    {Object.entries(v.subs).map(([sk,sn])=><button key={sk} onClick={()=>start(k,sk)} style={{padding:"7px 12px",borderRadius:T.radius.sm,border:`1px solid ${T.border.medium}`,background:T.surface,fontSize:12,color:T.text.secondary,cursor:"pointer",fontWeight:500,letterSpacing:-0.2}}>{sn}</button>)}
+                    <button onClick={()=>start(k)} style={{padding:"7px 12px",borderRadius:`4px 4px ${T.radius.md}px ${T.radius.md}px`,border:`1px solid ${T.border.light}`,background:T.surfAlt,fontSize:11,color:T.text.muted,cursor:"pointer"}}>기본 (서버·IT)</button>
+                  </div>:<button key={k} onClick={()=>start(k)} style={{padding:"12px 18px",borderRadius:T.radius.lg,border:k==="str"?`2px solid ${T.brandLt}`:`1px solid ${T.border.medium}`,background:T.surface,cursor:"pointer",minWidth:140,textAlign:"left",boxShadow:k==="str"?T.shadow.sm:"none"}}>
+                    <div style={{fontSize:14,fontWeight:600,color:T.text.primary,letterSpacing:-0.3}}>{v.name}{k==="str"&&<Badge color={T.brandLt} bg="#EFF6FF">Master</Badge>}</div>
+                    <div style={{fontSize:12,color:T.text.muted,marginTop:3}}>{v.on.length}/{MASTER_STEPS.length}단계 활성</div>
+                  </button>)}
+                </div>
+              </>)}
+              </div>}
+
+              {/* Mini-Flow: 카탈로그/반복구매 */}
+              {miniMode&&!gt&&<>
+                {msgs.map((m,i)=>{
+                  if(m.r==="u")return <div key={i} style={{display:"flex",justifyContent:"flex-end"}}><div style={{background:T.text.primary,color:T.text.inverse,padding:"10px 16px",borderRadius:`${T.radius.lg}px ${T.radius.lg}px 4px ${T.radius.lg}px`,maxWidth:"70%",fontSize:14,letterSpacing:-0.2,lineHeight:1.6}}>{m.c}</div></div>;
+                  if(m.r==="sys")return <div key={i} style={{display:"flex",gap:10}}><div style={{width:30,height:30,borderRadius:T.radius.full,background:miniMode==="reorder"?T.state.progress.accent:T.brandLt,color:T.text.inverse,display:"flex",alignItems:"center",justifyContent:"center",fontSize:11,fontWeight:700,flexShrink:0}}>{miniMode==="reorder"?"↻":"AI"}</div><div style={{background:T.surface,padding:"12px 16px",borderRadius:`4px ${T.radius.lg}px ${T.radius.lg}px ${T.radius.lg}px`,border:`1px solid ${T.border.light}`,fontSize:14,color:T.text.secondary,lineHeight:1.7,whiteSpace:"pre-wrap",letterSpacing:-0.2,boxShadow:T.shadow.sm}}>{m.c}</div></div>;
+                  if(m.r==="done")return <div key={i} style={{display:"flex",gap:10}}><div style={{width:30,height:30,borderRadius:T.radius.full,background:T.state.complete.accent,color:T.text.inverse,display:"flex",alignItems:"center",justifyContent:"center",fontSize:15,flexShrink:0}}>✓</div><div><div style={{background:T.state.complete.bg,padding:"14px 18px",borderRadius:`4px ${T.radius.lg}px ${T.radius.lg}px ${T.radius.lg}px`,border:`1px solid ${T.state.complete.border}`,fontSize:14,color:T.state.complete.fg,lineHeight:1.7,whiteSpace:"pre-wrap",fontWeight:500,letterSpacing:-0.2}}>{m.c}</div><div style={{display:"flex",gap:8,marginTop:8}}><button onClick={()=>setScreenMode("evidence_list")} style={{padding:"8px 18px",borderRadius:T.radius.full,border:"none",background:T.brand,color:"#FFF",fontSize:12,fontWeight:600,cursor:"pointer"}}>📋 Evidence(증적) 보기</button><button onClick={reset} style={{padding:"8px 18px",borderRadius:T.radius.full,border:"1px solid "+T.border.medium,background:T.surface,color:T.text.secondary,fontSize:12,cursor:"pointer"}}>처음으로</button></div></div></div>;
+                  return null;
+                })}
+                {!done&&(()=>{
+                  const flow=miniMode==="cat"?GT_ON.cat.miniFlow:GT_ON.reorder?.miniFlow;
+                  const curStep=flow?.[miniStep];
+                  if(!curStep||!curStep.actions)return null;
+                  return <div style={{display:"flex",gap:6,flexWrap:"wrap",marginTop:8}}>
+                    {curStep.actions.map((a,ai)=><button key={ai} onClick={()=>{
+                      setMsgs(p=>[...p,{r:"u",c:a}]);
+                      const nextIdx=miniStep+1;
+                      if(flow[nextIdx]){
+                        setMiniStep(nextIdx);
+                        setTimeout(()=>setMsgs(p=>[...p,{r:"sys",c:flow[nextIdx].ai}]),800);
+                        if(!flow[nextIdx].actions){setTimeout(()=>{collectEvent("COMPLETE",{});const packet=buildEvidencePacket();setCompletedExecs(p=>[...p,packet]);setMsgs(p=>[...p,{r:"done",c:"완료되었어요! 진행 상황은 알림으로 안내해 드릴게요."}]);setDone(true);},2000);}
+                      }
+                    }} style={{padding:"8px 18px",borderRadius:T.radius.full,border:ai===0?"none":`1px solid ${T.border.medium}`,background:ai===0?T.state.complete.accent:T.surface,color:ai===0?T.text.inverse:T.text.secondary,fontSize:12,cursor:"pointer",fontWeight:ai===0?600:400,letterSpacing:-0.2}}>{a}</button>)}
+                  </div>;
+                })()}
+                {done&&<div style={{marginTop:16,textAlign:"center"}}><button onClick={reset} style={{padding:"8px 20px",borderRadius:T.radius.full,border:`1px solid ${T.border.medium}`,background:T.surface,fontSize:13,cursor:"pointer",color:T.text.secondary}}>처음으로</button></div>}
+                {!done&&miniMode&&<div style={{marginTop:12,textAlign:"right"}}><button onClick={reset} style={{padding:"5px 14px",borderRadius:T.radius.full,border:`1px solid ${T.border.light}`,background:T.surface,fontSize:11,cursor:"pointer",color:T.text.muted}}>처음으로</button></div>}
+              </>}
+
+              {/* Messages */}
+              {msgs.map((m,i)=>{
+                if(m.r==="u")return <div key={i} style={{display:"flex",justifyContent:"flex-end"}}><div style={{background:T.text.primary,color:T.text.inverse,padding:"10px 16px",borderRadius:`${T.radius.lg}px ${T.radius.lg}px 4px ${T.radius.lg}px`,maxWidth:"70%",fontSize:14,letterSpacing:-0.2,lineHeight:1.6}}>{m.c}</div></div>;
+                if(m.r==="sys")return <div key={i} style={{display:"flex",gap:10}}><div style={{width:30,height:30,borderRadius:T.radius.full,background:T.brandLt,color:T.text.inverse,display:"flex",alignItems:"center",justifyContent:"center",fontSize:11,fontWeight:700,flexShrink:0}}>AI</div><div style={{background:T.surface,padding:"12px 16px",borderRadius:`4px ${T.radius.lg}px ${T.radius.lg}px ${T.radius.lg}px`,border:`1px solid ${T.border.light}`,fontSize:14,color:T.text.secondary,lineHeight:1.7,whiteSpace:"pre-wrap",letterSpacing:-0.2,boxShadow:T.shadow.sm}}>{m.c}</div></div>;
+                if(m.r==="done")return <div key={i} style={{display:"flex",gap:10}}><div style={{width:30,height:30,borderRadius:T.radius.full,background:T.state.complete.accent,color:T.text.inverse,display:"flex",alignItems:"center",justifyContent:"center",fontSize:15,flexShrink:0}}>✓</div><div><div style={{background:T.state.complete.bg,padding:"14px 18px",borderRadius:`4px ${T.radius.lg}px ${T.radius.lg}px ${T.radius.lg}px`,border:`1px solid ${T.state.complete.border}`,fontSize:14,color:T.state.complete.fg,lineHeight:1.7,whiteSpace:"pre-wrap",fontWeight:500,letterSpacing:-0.2}}>{m.c}</div><div style={{display:"flex",gap:8,marginTop:8}}><button onClick={()=>setScreenMode("evidence_list")} style={{padding:"8px 18px",borderRadius:T.radius.full,border:"none",background:T.brand,color:"#FFF",fontSize:12,fontWeight:600,cursor:"pointer"}}>📋 Evidence(증적) 보기</button><button onClick={reset} style={{padding:"8px 18px",borderRadius:T.radius.full,border:"1px solid "+T.border.medium,background:T.surface,color:T.text.secondary,fontSize:12,cursor:"pointer"}}>처음으로</button></div></div></div>;
+                if(m.r==="gov"){const isStop=m.govType==="stop";const gst=isStop?T.state.blocked:T.state.review;return <div key={i} style={{display:"flex",gap:10}}><div style={{width:30,height:30,borderRadius:T.radius.full,background:gst.accent,color:T.text.inverse,display:"flex",alignItems:"center",justifyContent:"center",fontSize:12,flexShrink:0,fontWeight:700}}>{isStop?"!":"?"}</div><div style={{maxWidth:"85%"}}><div style={{background:gst.bg,padding:"14px 18px",borderRadius:`4px ${T.radius.lg}px ${T.radius.lg}px ${T.radius.lg}px`,border:`2px solid ${gst.accent}`}}><p style={{fontSize:14,color:gst.fg,margin:0,lineHeight:1.7,whiteSpace:"pre-wrap",fontWeight:600}}>{m.c}</p>{govData&&<div style={{marginTop:8}}>{govData.signals.map((s,si)=><div key={si} style={{display:"flex",alignItems:"center",gap:6,padding:"3px 0",fontSize:12}}><div style={{width:8,height:8,borderRadius:4,background:s.ok?T.state.complete.accent:gst.accent}}/><span style={{color:gst.fg}}>{s.k}: {s.v}</span></div>)}</div>}{isStop&&<div style={{marginTop:8,padding:"6px 10px",borderRadius:T.radius.sm,background:"#FFF",border:`1px solid ${gst.accent}`,fontSize:10,color:gst.fg}}>UX Freeze: ① 직접 재개 금지 ② HR 없이 승인 금지 ③ 이동 금지 ④ Warning 축소 금지</div>}{govState&&i===msgs.length-1&&<div style={{marginTop:10}}><textarea value={govReason} onChange={e=>setGovReason(e.target.value)} placeholder={isStop?"해제/종료 사유 (필수)":"승인/반려 사유 (필수)"} style={{width:"100%",padding:8,borderRadius:T.radius.sm,border:`1px solid ${T.border.medium}`,fontSize:12,minHeight:40,resize:"vertical",fontFamily:T.font.sans}}/><div style={{display:"flex",gap:6,marginTop:8}}>{isStop?<><button disabled={!govReason.trim()} onClick={()=>{setGovState(null);setMsgs(p=>[...p,{r:"sys",c:"Release — 보완 후 재점검합니다.\n사유: "+govReason}]);}} style={{flex:1,padding:"7px",borderRadius:T.radius.full,border:"none",background:govReason.trim()?T.state.review.accent:T.border.light,color:govReason.trim()?"#FFF":T.text.muted,fontSize:12,fontWeight:600,cursor:govReason.trim()?"pointer":"default"}}>Release</button><button disabled={!govReason.trim()} onClick={()=>{setGovState(null);setMsgs(p=>[...p,{r:"done",c:"Terminate — 실행 종료.\n사유: "+govReason}]);setDone(true);}} style={{padding:"7px 14px",borderRadius:T.radius.full,border:`1px solid ${govReason.trim()?gst.accent:T.border.light}`,background:T.surface,color:govReason.trim()?gst.fg:T.text.muted,fontSize:12,cursor:govReason.trim()?"pointer":"default"}}>Terminate</button></>:<><button disabled={!govReason.trim()} onClick={()=>{setGovState(null);setMsgs(p=>[...p,{r:"sys",c:"Approve — 진행합니다.\n사유: "+govReason}]);}} style={{flex:1,padding:"7px",borderRadius:T.radius.full,border:"none",background:govReason.trim()?T.state.complete.accent:T.border.light,color:govReason.trim()?"#FFF":T.text.muted,fontSize:12,fontWeight:600,cursor:govReason.trim()?"pointer":"default"}}>Approve</button><button disabled={!govReason.trim()} onClick={()=>{setGovState("STOP");setGovData({reason:"반려: "+govReason,severity:"HARD",signals:[{k:"반려",v:govReason,ok:false}]});setGovReason("");setMsgs(p=>[...p,{r:"gov",c:"EXECUTION_BLOCKED — 반려됨.",govType:"stop"}]);}} style={{padding:"7px 14px",borderRadius:T.radius.full,border:`1px solid ${govReason.trim()?gst.accent:T.border.light}`,background:T.surface,color:govReason.trim()?gst.fg:T.text.muted,fontSize:12,cursor:govReason.trim()?"pointer":"default"}}>Reject</button></>}</div></div>}</div></div></div>;}
+                if(m.r==="wait")return <div key={i} style={{display:"flex",gap:10}}><div style={{width:30,height:30,borderRadius:T.radius.full,background:T.brandLt,color:T.text.inverse,display:"flex",alignItems:"center",justifyContent:"center",fontSize:11,fontWeight:700,flexShrink:0}}>AI</div><div style={{maxWidth:"80%"}}><div style={{background:T.state.progress.bg,padding:"14px 18px",borderRadius:`4px ${T.radius.lg}px ${T.radius.lg}px ${T.radius.lg}px`,border:`1px solid ${T.state.progress.border}`}}><p style={{fontSize:14,color:T.state.progress.fg,margin:0,lineHeight:1.7,whiteSpace:"pre-wrap",letterSpacing:-0.2}}>{m.c}</p><div style={{display:"inline-flex",alignItems:"center",gap:6,marginTop:8,padding:"4px 10px",borderRadius:T.radius.sm,background:T.surface,border:`1px solid ${T.border.light}`}}><span style={{fontSize:13}}>⏳</span><span style={{fontSize:12,color:T.text.secondary}}>{m.duration}</span></div></div>{i===msgs.length-1&&!done&&<button onClick={()=>onNotify(m)} style={{marginTop:10,padding:"8px 18px",borderRadius:T.radius.full,border:`2px dashed ${T.state.review.border}`,background:T.state.review.bg,color:T.state.review.fg,fontSize:12,cursor:"pointer",fontWeight:600,letterSpacing:-0.2}}>알림 도착 (시뮬레이션)</button>}</div></div>;
+                if(m.r==="notify")return <div key={i} style={{display:"flex",justifyContent:"center"}}><div style={{padding:"8px 18px",borderRadius:T.radius.full,background:T.state.review.bg,border:`1px solid ${T.state.review.border}`,fontSize:13,color:T.state.review.fg,fontWeight:600,letterSpacing:-0.2}}>🔔 {m.c}</div></div>;
+                if(m.r==="sealed")return <div key={i} style={{display:"flex",gap:10}}><div style={{width:30,height:30,borderRadius:T.radius.full,background:"#7C3AED",color:T.text.inverse,display:"flex",alignItems:"center",justifyContent:"center",fontSize:14,flexShrink:0}}>🔒</div><div style={{maxWidth:"80%"}}><div style={{background:"#F5F3FF",padding:"14px 18px",borderRadius:`4px ${T.radius.lg}px ${T.radius.lg}px ${T.radius.lg}px`,border:"1px solid #DDD6FE"}}><p style={{fontSize:14,color:"#5B21B6",margin:0,lineHeight:1.7,whiteSpace:"pre-wrap",letterSpacing:-0.2,fontWeight:500}}>{m.c}</p></div>{i===msgs.length-1&&!done&&<button onClick={()=>unsealQuotes(m)} style={{marginTop:10,padding:"8px 18px",borderRadius:T.radius.full,border:"2px solid #7C3AED",background:"#7C3AED",color:"#FFF",fontSize:12,cursor:"pointer",fontWeight:700,letterSpacing:-0.2}}>🔓 마감 완료 — 견적 개봉</button>}</div></div>;
+                if(m.r==="compact")return <div key={i} style={{display:"flex",gap:8,alignItems:"center"}}><div style={{width:24,height:24,borderRadius:12,background:m.color||T.state.complete.accent,color:T.text.inverse,display:"flex",alignItems:"center",justifyContent:"center",fontSize:9,flexShrink:0,fontWeight:700}}>{m.agent?.replace("A","")}</div><div style={{padding:"6px 14px",borderRadius:T.radius.md,background:T.state.complete.bg,border:`1px solid ${T.state.complete.border}`,fontSize:13,color:T.state.complete.fg,fontWeight:500,letterSpacing:-0.2}}>{m.c}</div></div>;
+                const ac=m.color||T.brandLt;
+                return <div key={i} style={{display:"flex",gap:10,alignItems:"flex-start"}}>
+                  <div style={{width:30,height:30,borderRadius:T.radius.full,background:ac,color:T.text.inverse,display:"flex",alignItems:"center",justifyContent:"center",fontSize:10,flexShrink:0,fontWeight:700}}>{m.agent?.replace("A","")}</div>
+                  <div style={{maxWidth:"85%"}}><div style={{background:T.surface,padding:"12px 16px",borderRadius:`4px ${T.radius.lg}px ${T.radius.lg}px ${T.radius.lg}px`,border:`1px solid ${T.border.light}`,boxShadow:T.shadow.sm}}>
+                    <p style={{fontSize:14,color:T.text.primary,margin:0,lineHeight:1.7,whiteSpace:"pre-wrap",letterSpacing:-0.2}}>{m.c}</p>
+                    {m.detail&&<p style={{fontSize:12,color:T.text.secondary,margin:"6px 0 0",whiteSpace:"pre-wrap"}}>{m.detail}</p>}
+                  </div></div>
+                </div>;
+              })}
+              {busy&&<div style={{display:"flex",gap:10}}><div style={{width:30,height:30,borderRadius:T.radius.full,background:T.brandLt,color:T.text.inverse,display:"flex",alignItems:"center",justifyContent:"center",fontSize:11,fontWeight:700,flexShrink:0}}>AI</div><div style={{background:T.surface,padding:"12px 16px",borderRadius:`4px ${T.radius.lg}px ${T.radius.lg}px ${T.radius.lg}px`,border:`1px solid ${T.border.light}`,fontSize:13,color:T.text.muted,letterSpacing:-0.2}}>다음 단계를 준비하고 있어요...</div></div>}
+            </div>
+          </div>
+
+          {/* Right: Panel */}
+          {steps.length>0&&(()=>{const cs=steps[step];const lastA=msgs.filter(m=>m.r==="a").slice(-1)[0];const waiting=msgs.some(m=>m.r==="wait"&&m.stepIdx===step);const canAct=!done&&!busy&&!waiting&&lastA&&lastA.stepIdx===step;
+          return <div style={{width:320,background:T.surface,borderLeft:`1px solid ${T.border.light}`,flexShrink:0,display:"flex",flexDirection:"column",position:"relative"}}>
+            {/* Aux Panel Overlay */}
+            {auxPanel&&<div style={{position:"absolute",inset:0,zIndex:10,background:T.surface,display:"flex",flexDirection:"column",overflow:"hidden"}}>
+              {auxPanel.t==="search"&&<AuxSearch title={auxPanel.title} mode={auxPanel.mode} onDone={auxPanel.cb} onClose={()=>setAuxPanel(null)}/>}
+              {auxPanel.t==="form"&&<AuxForm title={auxPanel.title} fields={auxPanel.fields} onDone={auxPanel.cb} onClose={()=>setAuxPanel(null)}/>}
+              {auxPanel.t==="compare"&&<AuxCompare title={auxPanel.title} items={auxPanel.items} onDone={auxPanel.cb} onClose={()=>setAuxPanel(null)}/>}
+              {auxPanel.t==="check"&&<AuxCheck title={auxPanel.title} secs={auxPanel.secs} upload={auxPanel.upload} onDone={auxPanel.cb} onClose={()=>setAuxPanel(null)}/>}
+            </div>}
+            {/* Panel Header */}
+            <div style={{padding:"12px 16px",borderBottom:`1px solid ${T.border.light}`,display:"flex",alignItems:"center",gap:8}}>
+              <div style={{width:24,height:24,borderRadius:12,background:cs?.color||T.brandLt,color:T.text.inverse,display:"flex",alignItems:"center",justifyContent:"center",fontSize:10,fontWeight:700}}>{step+1}</div>
+              <span style={{fontSize:14,fontWeight:600,color:T.text.primary,letterSpacing:-0.3}}>{cs?.label}</span>
+              {round>1&&<Badge color={T.state.review.fg} bg={T.state.review.bg}>R{round}</Badge>}
+            </div>
+
+            {/* Coaching Card — 패널 상단 고정 */}
+            {coachMode&&cs&&COACHING[cs.id]&&(
+              <div style={{padding:"8px 14px",background:"#FFFBEB",borderBottom:"2px solid #FCD34D"}}>
+                <div style={{fontSize:11,fontWeight:700,color:"#92400E",marginBottom:3}}>💡 {COACHING[cs.id].tip}</div>
+                <div style={{fontSize:11,color:"#78350F",lineHeight:1.6,whiteSpace:"pre-wrap"}}>{COACHING[cs.id].guide}</div>
+              </div>
+            )}
+
+            {/* Panel Body */}
+            <div style={{flex:1,overflowY:"auto",padding:14,display:"flex",flexDirection:"column",gap:12}}>
+              {/* Suppliers */}
+              {cs?.suppliers&&<div>
+                <div style={{fontSize:11,fontWeight:600,color:T.text.muted,marginBottom:8,textTransform:"uppercase",letterSpacing:0.5}}>공급사 후보</div>
+                {cs.suppliers.map((s,si)=><div key={si} style={{padding:"10px 12px",borderRadius:T.radius.md,border:`1px solid ${T.border.light}`,background:T.surfAlt,marginBottom:5}}>
+                  <div style={{display:"flex",justifyContent:"space-between",alignItems:"center"}}>
+                    <div><div style={{fontSize:13,fontWeight:600,color:T.text.primary,letterSpacing:-0.2}}>{s.n}</div><div style={{fontSize:11,color:T.text.secondary,marginTop:1}}>{s.d}</div></div>
+                    <div style={{textAlign:"right"}}>
+                      <div style={{display:"flex",gap:3,justifyContent:"flex-end",marginBottom:3}}>{["fin","del","qual","esg"].map(k=><span key={k} style={{width:8,height:8,borderRadius:4,background:s[k]==="g"?T.state.complete.accent:s[k]==="y"?T.state.review.accent:T.state.blocked.accent}}/>)}</div>
+                      <div style={{fontSize:10,fontWeight:500,color:s.risk==="낮음"?T.state.complete.fg:s.risk==="보통"?T.state.review.fg:T.state.blocked.fg}}>{s.risk} · {s.sc}점</div>
+                    </div>
+                  </div>
+                </div>)}
+              </div>}
+
+              {/* Quotes */}
+              {cs?.quotes&&<div>
+                <div style={{fontSize:11,fontWeight:600,color:T.text.muted,marginBottom:8,textTransform:"uppercase",letterSpacing:0.5}}>견적 비교</div>
+                {cs.quotes.map((q,qi)=><div key={qi} style={{padding:"10px 12px",borderRadius:T.radius.md,border:q.best?`2px solid ${T.state.complete.accent}`:`1px solid ${T.border.light}`,background:q.best?T.state.complete.bg:T.surfAlt,marginBottom:5}}>
+                  <div style={{display:"flex",justifyContent:"space-between",alignItems:"center"}}>
+                    <div><div style={{fontSize:13,fontWeight:600,color:T.text.primary,letterSpacing:-0.2}}>{q.n}{q.best&&<Badge color={T.state.complete.fg} bg={T.state.complete.bg}>추천</Badge>}</div><div style={{fontSize:11,color:T.text.secondary,marginTop:1}}>{q.note}</div></div>
+                    <div style={{textAlign:"right"}}><div style={{fontSize:14,fontWeight:600,color:T.text.primary}}>{q.price}</div><div style={{fontSize:11,color:T.text.secondary}}>납기 {q.delivery}</div></div>
+                  </div>
+                </div>)}
+              </div>}
+
+              {/* Preview */}
+              {cs?.preview&&<div>
+                <div style={{fontSize:11,fontWeight:600,color:T.text.muted,marginBottom:8,textTransform:"uppercase",letterSpacing:0.5}}>{cs.preview.type} 요청서</div>
+                <div style={{padding:"10px 12px",borderRadius:T.radius.md,border:`1px solid ${T.state.review.border}`,background:T.state.review.bg}}>
+                  <div style={{display:"grid",gridTemplateColumns:"60px 1fr",gap:"4px 8px",fontSize:12}}>
+                    <span style={{color:T.text.muted}}>품목</span><span style={{color:T.text.primary,fontWeight:500}}>{cs.preview.item}</span>
+                    <span style={{color:T.text.muted}}>수량</span><span style={{color:T.text.primary,fontWeight:500}}>{cs.preview.qty}</span>
+                    <span style={{color:T.text.muted}}>사양</span><span style={{color:T.text.primary,fontWeight:500}}>{cs.preview.spec}</span>
+                    <span style={{color:T.text.muted}}>납기</span><span style={{color:T.text.primary,fontWeight:500}}>{cs.preview.date}</span>
+                    <span style={{color:T.text.muted}}>대상</span><span style={{color:T.text.primary,fontWeight:500,lineHeight:1.5}}>{cs.preview.targets}</span>
+                  </div>
+                </div>
+              </div>}
+
+              {/* Selection */}
+              {cs?.selection&&<div>
+                <div style={{fontSize:11,fontWeight:600,color:T.text.muted,marginBottom:8,textTransform:"uppercase",letterSpacing:0.5}}>종합 평가</div>
+                <div style={{padding:"12px 14px",borderRadius:T.radius.md,border:`2px solid ${T.state.complete.accent}`,background:T.state.complete.bg,marginBottom:6}}>
+                  <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:6}}>
+                    <div><span style={{fontSize:14,fontWeight:700,color:T.state.complete.fg,letterSpacing:-0.3}}>{cs.selection.winner}</span><Badge color={T.state.complete.fg} bg="#DCFCE7">선정</Badge></div>
+                    <span style={{fontSize:16,fontWeight:700,color:T.state.complete.fg}}>{cs.selection.total}점</span>
+                  </div>
+                  <div style={{fontSize:11,color:T.state.complete.fg,marginBottom:8,letterSpacing:-0.2}}>{cs.selection.reason}</div>
+                  {cs.selection.scores.map((sc,si)=><div key={si} style={{display:"flex",alignItems:"center",gap:6,marginBottom:3}}>
+                    <span style={{fontSize:10,color:T.text.secondary,width:32,textAlign:"right",letterSpacing:-0.2}}>{sc.k}</span>
+                    <div style={{flex:1,height:5,borderRadius:3,background:T.border.light}}><div style={{width:sc.v+"%",height:5,borderRadius:3,background:sc.v>=90?T.state.complete.accent:sc.v>=80?T.state.progress.accent:T.state.review.accent,transition:"width .5s"}}/></div>
+                    <span style={{fontSize:10,color:T.text.primary,width:18,fontWeight:600}}>{sc.v}</span>
+                  </div>)}
+                </div>
+                <div style={{padding:"6px 10px",borderRadius:T.radius.sm,background:T.surfAlt,border:`1px solid ${T.border.light}`,display:"flex",justifyContent:"space-between",fontSize:11,color:T.text.secondary}}>
+                  <span>차순위: {cs.selection.runner}</span><span>{cs.selection.runnerTotal}점 (차이 +{cs.selection.total-cs.selection.runnerTotal})</span>
+                </div>
+              </div>}
+
+              {/* Panel Sections */}
+              {cs?.panel&&<div>
+                {cs.panel.sections.map((sec,si)=><div key={si} style={{marginBottom:10}}>
+                  <div style={{fontSize:11,fontWeight:600,color:T.text.muted,marginBottom:6,textTransform:"uppercase",letterSpacing:0.5}}>{sec.label}</div>
+                  {sec.type==="history"&&sec.data.map((h,hi)=><div key={hi} style={{display:"flex",justifyContent:"space-between",fontSize:12,padding:"4px 0",borderBottom:hi<sec.data.length-1?`1px solid ${T.border.light}`:"none"}}><span style={{color:T.text.primary,fontWeight:500}}>{h.n}</span><span style={{color:T.text.secondary,fontSize:11}}>{h.v}</span></div>)}
+                  {sec.type==="info"&&<div style={{fontSize:12,color:T.text.primary,padding:"2px 0",letterSpacing:-0.2}}>{sec.data}</div>}
+                  {sec.type==="alert"&&<div style={{fontSize:12,color:T.state.blocked.fg,padding:"8px 10px",borderRadius:T.radius.sm,background:T.state.blocked.bg,border:`1px solid ${T.state.blocked.border}`,letterSpacing:-0.2}}>{sec.data}</div>}
+                  {sec.type==="check"&&sec.data.map((c,ci)=><div key={ci} style={{display:"flex",alignItems:"center",gap:6,fontSize:12,padding:"3px 0"}}><div style={{width:7,height:7,borderRadius:4,background:c.ok?T.state.complete.accent:T.state.review.accent}}/><span style={{color:T.text.primary,letterSpacing:-0.2}}>{c.label}</span></div>)}
+                </div>)}
+              </div>}
+
+              {/* Empty */}
+              {!cs?.suppliers&&!cs?.quotes&&!cs?.preview&&!cs?.selection&&!cs?.panel&&<div style={{display:"flex",alignItems:"center",justifyContent:"center",flex:1,padding:20}}>
+                <div style={{textAlign:"center",color:T.text.muted,fontSize:13}}>{done?"구매가 완료되었어요":"단계별 정보가 여기에 표시됩니다"}</div>
+              </div>}
+            </div>
+
+            {/* Actions */}
+            {canAct&&<div style={{padding:"12px 14px",borderTop:`1px solid ${T.border.light}`,flexShrink:0}}>
+              <div style={{display:"flex",gap:6,flexWrap:"wrap"}}>
+                {lastA.actions&&lastA.actions.length>0?lastA.actions.map((a,ai)=><button key={ai} onClick={()=>pick(a,lastA)} style={{padding:"8px 16px",borderRadius:T.radius.full,border:ai===0?"none":`1px solid ${a.includes("제외")||a.includes("수정")?T.state.blocked.border:T.border.medium}`,background:ai===0?T.state.complete.accent:T.surface,color:ai===0?T.text.inverse:(a.includes("제외")||a.includes("수정")?T.state.blocked.fg:T.text.secondary),fontSize:12,cursor:"pointer",fontWeight:ai===0?600:400,flex:ai===0?"1 0 auto":"0 0 auto",letterSpacing:-0.2,transition:"all .15s"}}>{a}</button>):<>
+                  <button onClick={()=>pick("확인하고 진행",lastA)} style={{flex:1,padding:"8px 16px",borderRadius:T.radius.full,border:"none",background:T.state.complete.accent,color:T.text.inverse,fontSize:13,cursor:"pointer",fontWeight:600,letterSpacing:-0.2}}>확인하고 진행</button>
+                  <button onClick={()=>pick("수정 필요",lastA)} style={{padding:"8px 16px",borderRadius:T.radius.full,border:`1px solid ${T.state.blocked.border}`,background:T.surface,color:T.state.blocked.fg,fontSize:12,cursor:"pointer",letterSpacing:-0.2}}>수정 필요</button>
+                </>}
+              </div>
+            </div>}
+          </div>})()}
+        </div>
+      </div>
+
+      {/* ═══ Evidence 화면 (목록 + 상세) — Compliance Evidence Packaging v1.0 §4 ═══ */}
+      {screenMode!=="execute"&&(()=>{
+        const ep=selectedEvidence;
+        const EInfoRow=({l,v,ok})=><div style={{display:"flex",justifyContent:"space-between",padding:"4px 0",borderBottom:"1px solid "+T.border.light,fontSize:12}}><span style={{color:T.text.muted}}>{l}</span><span style={{color:ok===false?"#DC2626":ok===true?"#166534":T.text.primary,fontWeight:500}}>{v}</span></div>;
+        const totalSavings=completedExecs.reduce((s,e)=>{const m=e.evidence?.savings?.match(/₩([\d,]+)만.*절감/);return s+(m?parseInt(m[1].replace(/,/g,"")):0);},0);
+        return <div style={{position:"fixed",inset:0,zIndex:999,background:"rgba(0,0,0,.5)",display:"flex",alignItems:"center",justifyContent:"center"}}>
+          <div style={{width:"92%",maxWidth:960,maxHeight:"90vh",background:T.surface,borderRadius:T.radius.xl,overflow:"hidden",boxShadow:"0 24px 80px rgba(0,0,0,.35)",display:"flex",flexDirection:"column"}}>
+            {/* Header */}
+            <div style={{padding:"14px 20px",background:`linear-gradient(135deg,${T.brand},${T.brandLt})`,display:"flex",alignItems:"center",justifyContent:"space-between",flexShrink:0}}>
+              <div style={{display:"flex",alignItems:"center",gap:10}}>
+                <div style={{width:32,height:32,borderRadius:8,background:"rgba(255,255,255,.15)",display:"flex",alignItems:"center",justifyContent:"center",fontSize:16}}>✓</div>
+                <div><div style={{fontWeight:700,fontSize:15,color:"#FFF"}}>Execution Result — Evidence</div>
+                <div style={{fontSize:11,color:"rgba(255,255,255,.7)"}}>{completedExecs.length}건 · Compliance Evidence Packaging v1.0</div></div>
+              </div>
+              <div style={{display:"flex",gap:6}}>
+                <button onClick={()=>{setSelectedEvidence(null);setScreenMode("evidence_list");}} style={{padding:"5px 14px",borderRadius:T.radius.sm,border:screenMode==="evidence_list"?"2px solid #FFF":"1px solid rgba(255,255,255,.3)",background:screenMode==="evidence_list"?"rgba(255,255,255,.2)":"transparent",color:"#FFF",fontSize:11,fontWeight:screenMode==="evidence_list"?600:400,cursor:"pointer"}}>📋 목록</button>
+                {ep&&<button style={{padding:"5px 14px",borderRadius:T.radius.sm,border:"2px solid #FFF",background:"rgba(255,255,255,.2)",color:"#FFF",fontSize:11,fontWeight:600}}>📄 상세</button>}
+                <button onClick={()=>{setScreenMode("execute");setSelectedEvidence(null);}} style={{width:28,height:28,borderRadius:T.radius.full,border:"1px solid rgba(255,255,255,.3)",background:"transparent",color:"#FFF",fontSize:14,cursor:"pointer"}}>✕</button>
+              </div>
+            </div>
+
+            {/* ── 목록 뷰 ── */}
+            {screenMode==="evidence_list"&&<div style={{flex:1,overflow:"auto",padding:20}}>
+              {/* Savings Summary */}
+              <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr 1fr",gap:10,marginBottom:16}}>
+                <div style={{padding:"12px 14px",borderRadius:T.radius.md,background:T.state.complete.bg,border:"1px solid "+T.state.complete.border}}>
+                  <div style={{fontSize:10,color:T.state.complete.fg}}>완료 건수</div>
+                  <div style={{fontSize:22,fontWeight:700,color:T.state.complete.fg}}>{completedExecs.length}건</div>
+                </div>
+                <div style={{padding:"12px 14px",borderRadius:T.radius.md,background:T.state.complete.bg,border:"1px solid "+T.state.complete.border}}>
+                  <div style={{fontSize:10,color:T.state.complete.fg}}>누적 절감</div>
+                  <div style={{fontSize:22,fontWeight:700,color:T.state.complete.fg}}>{totalSavings>0?"₩"+totalSavings.toLocaleString()+"만":"—"}</div>
+                </div>
+                <div style={{padding:"12px 14px",borderRadius:T.radius.md,background:T.state.review.bg,border:"1px solid "+T.state.review.border}}>
+                  <div style={{fontSize:10,color:T.state.review.fg}}>Stop Code</div>
+                  <div style={{fontSize:22,fontWeight:700,color:T.state.review.fg}}>{completedExecs.reduce((s,e)=>s+(e.governance?.stopCodes||0),0)}건</div>
+                </div>
+                <div style={{padding:"12px 14px",borderRadius:T.radius.md,background:T.state.progress.bg,border:"1px solid "+T.state.progress.border}}>
+                  <div style={{fontSize:10,color:T.state.progress.fg}}>Human Review</div>
+                  <div style={{fontSize:22,fontWeight:700,color:T.state.progress.fg}}>{completedExecs.reduce((s,e)=>s+(e.governance?.humanReviews||0),0)}회</div>
+                </div>
+              </div>
+              {/* List */}
+              {completedExecs.map((e,i)=>{
+                const isMock=i<4;
+                const gc=e.governance||{};
+                return <div key={e.id} onClick={()=>{setSelectedEvidence(e);setScreenMode("evidence_detail");}} style={{display:"flex",alignItems:"center",gap:14,padding:"14px 16px",borderRadius:T.radius.md,border:"1px solid "+T.border.light,background:T.surfAlt,marginBottom:6,cursor:"pointer",transition:"all .15s",borderLeft:"3px solid "+(e.gt==="urg"||e.gt==="exc"?T.state.review.accent:T.state.complete.accent)}}>
+                  <div style={{width:36,height:36,borderRadius:10,background:T.state.complete.bg,display:"flex",alignItems:"center",justifyContent:"center",fontSize:16,flexShrink:0}}>{e.gt==="urg"?"⚡":e.gt==="exc"?"⚠️":e.gt==="rfq"?"📊":e.gt==="pr"?"📝":"✓"}</div>
+                  <div style={{flex:1}}>
+                    <div style={{display:"flex",alignItems:"center",gap:8}}>
+                      <span style={{fontSize:14,fontWeight:600,color:T.text.primary}}>{e.title}</span>
+                      <span style={{fontSize:10,fontWeight:600,padding:"2px 8px",borderRadius:T.radius.full,color:T.state.complete.fg,background:T.state.complete.bg}}>완료</span>
+                      {isMock&&<span style={{fontSize:9,padding:"1px 6px",borderRadius:4,background:T.border.light,color:T.text.muted}}>더미</span>}
+                      {!isMock&&<span style={{fontSize:9,padding:"1px 6px",borderRadius:4,background:"#DBEAFE",color:"#1E40AF"}}>실행</span>}
+                    </div>
+                    <div style={{fontSize:11,color:T.text.secondary,marginTop:2}}>{e.id} · {e.vendor||"—"} · {e.amount||"—"} · {e.evidence?.duration||"—"}</div>
+                  </div>
+                  <div style={{textAlign:"right",flexShrink:0}}>
+                    <div style={{fontSize:11,color:T.text.muted}}>{e.completedAt}</div>
+                    <div style={{display:"flex",gap:4,marginTop:4,justifyContent:"flex-end"}}>
+                      {gc.stopCodes>0&&<span style={{fontSize:9,padding:"1px 6px",borderRadius:4,background:T.state.blocked.bg,color:T.state.blocked.fg}}>Stop {gc.stopCodes}</span>}
+                      {gc.humanReviews>0&&<span style={{fontSize:9,padding:"1px 6px",borderRadius:4,background:T.state.review.bg,color:T.state.review.fg}}>Review {gc.humanReviews}</span>}
+                      {gc.overrides>0&&<span style={{fontSize:9,padding:"1px 6px",borderRadius:4,background:T.state.blocked.bg,color:T.state.blocked.fg}}>Override {gc.overrides}</span>}
+                      {gc.postObligation&&<span style={{fontSize:9,padding:"1px 6px",borderRadius:4,background:T.state.review.bg,color:T.state.review.fg}}>사후의무</span>}
+                    </div>
+                  </div>
+                  <span style={{fontSize:16,color:T.text.muted}}>›</span>
+                </div>;
+              })}
+              <div style={{padding:10,borderRadius:T.radius.sm,background:T.surfAlt,border:"1px solid "+T.border.light,fontSize:11,color:T.text.secondary,lineHeight:1.6,marginTop:10}}>
+                ℹ️ 더미 4건은 시연용 참고 데이터입니다. Execute에서 BJ를 완료하면 5번째부터 실제 실행 이력이 자동 누적됩니다.
+              </div>
+            </div>}
+
+            {/* ── 상세 뷰 ── */}
+            {screenMode==="evidence_detail"&&ep&&<>
+              <div style={{padding:"10px 20px",background:T.state.complete.bg,borderBottom:"2px solid "+T.state.complete.border,display:"flex",justifyContent:"space-between",alignItems:"center",flexShrink:0}}>
+                <div><span style={{fontSize:15,fontWeight:700,color:T.state.complete.fg}}>{ep.title}</span><span style={{fontSize:12,color:T.state.complete.fg,marginLeft:10}}>{ep.id} · {ep.vendor||"—"} · {ep.amount||"—"}</span></div>
+                <button onClick={()=>{setSelectedEvidence(null);setScreenMode("evidence_list");}} style={{padding:"4px 12px",borderRadius:T.radius.sm,border:"1px solid "+T.state.complete.border,background:T.surface,fontSize:11,color:T.state.complete.fg,cursor:"pointer"}}>← 목록</button>
+              </div>
+              <div style={{flex:1,overflow:"auto",padding:20}}>
+                {/* §4.1 */}
+                <div style={{marginBottom:16}}><div style={{fontSize:13,fontWeight:600,color:T.text.primary,marginBottom:8}}>§4.1 Process Identification</div>
+                  <div style={{padding:12,borderRadius:T.radius.md,background:T.surfAlt,border:"1px solid "+T.border.light}}>
+                    <EInfoRow l="Session ID" v={ep.processId?.sessionId||"—"}/><EInfoRow l="GuideType" v={ep.processId?.guideType||"—"}/><EInfoRow l="Tier" v={ep.processId?.tier||"—"}/><EInfoRow l="시작" v={ep.requestedAt||"—"}/><EInfoRow l="완료" v={ep.completedAt||"—"}/><EInfoRow l="요청자" v={ep.requester||"—"}/>
+                  </div>
+                </div>
+                {/* §4.2 */}
+                <div style={{marginBottom:16}}><div style={{fontSize:13,fontWeight:600,color:T.text.primary,marginBottom:8}}>§4.2 Decision Trace ({ep.decisionTrace?.length||0}건)</div>
+                  {(ep.decisionTrace||[]).map((d,i)=><div key={i} style={{display:"flex",alignItems:"center",gap:8,padding:"6px 12px",borderRadius:T.radius.sm,background:T.surfAlt,border:"1px solid "+T.border.light,marginBottom:4}}>
+                    <span style={{fontSize:10,color:T.text.muted,width:40,flexShrink:0}}>{d.time}</span>
+                    <span style={{fontSize:12,fontWeight:500,color:T.text.primary,flex:1}}>{d.detail||d.event}</span>
+                    <div style={{width:60,display:"flex",alignItems:"center",gap:3}}><div style={{flex:1,height:4,borderRadius:2,background:T.border.light}}><div style={{width:Math.round((d.confidence||0)*100)+"%",height:4,borderRadius:2,background:(d.confidence||0)>=0.80?T.state.complete.accent:(d.confidence||0)>=0.60?T.state.review.accent:T.state.progress.accent}}/></div><span style={{fontSize:9,color:T.text.muted}}>{Math.round((d.confidence||0)*100)}%</span></div>
+                  </div>)}
+                </div>
+                {/* §4.3 */}
+                <div style={{marginBottom:16}}><div style={{fontSize:13,fontWeight:600,color:T.text.primary,marginBottom:8}}>§4.3 Policy Application ({ep.policyApplication?.length||0}건)</div>
+                  {(ep.policyApplication||[]).map((p,i)=><div key={i} style={{display:"flex",alignItems:"center",gap:8,padding:"6px 12px",borderRadius:T.radius.sm,background:T.surfAlt,border:"1px solid "+T.border.light,marginBottom:4}}>
+                    <div style={{width:8,height:8,borderRadius:4,background:p.applied?T.state.complete.accent:T.border.medium,flexShrink:0}}/>
+                    <div style={{flex:1}}><div style={{fontSize:12,fontWeight:500}}>{p.name} <span style={{fontSize:10,color:T.text.muted}}>{p.ruleId}</span></div><div style={{fontSize:11,color:T.text.secondary}}>{p.result}</div></div>
+                    <span style={{fontSize:10,fontWeight:600,padding:"2px 8px",borderRadius:T.radius.full,color:p.applied?T.state.complete.fg:T.text.muted,background:p.applied?T.state.complete.bg:T.state.ready.bg}}>{p.applied?"적용":"미적용"}</span>
+                  </div>)}
+                </div>
+                {/* §4.4 */}
+                <div style={{marginBottom:16}}><div style={{fontSize:13,fontWeight:600,color:T.text.primary,marginBottom:8}}>§4.4 Engine Trace ({ep.trace?.length||0}건)</div>
+                  <div style={{position:"relative",paddingLeft:28}}>
+                    {(ep.trace||[]).map((t,i)=>{const sc=t.state==="COMPLETED"?T.state.complete:t.state==="HUMAN_REVIEW_REQUIRED"?T.state.review:t.state==="EXECUTION_BLOCKED"?T.state.blocked:T.state.progress;return(
+                      <div key={i} style={{display:"flex",alignItems:"flex-start",gap:6,marginBottom:4,position:"relative"}}>
+                        <div style={{position:"absolute",left:-20,top:0,display:"flex",flexDirection:"column",alignItems:"center"}}><div style={{width:10,height:10,borderRadius:5,background:sc.accent,border:"2px solid "+T.surface,zIndex:1}}/>{i<(ep.trace||[]).length-1&&<div style={{width:1,height:18,background:T.border.light}}/>}</div>
+                        <span style={{fontSize:10,color:T.text.muted,width:36,flexShrink:0}}>{t.time}</span>
+                        <span style={{fontSize:10,color:sc.fg,width:20,flexShrink:0,fontWeight:600}}>{t.engine}</span>
+                        <span style={{fontSize:10,color:T.text.muted,width:20,flexShrink:0}}>{t.agent}</span>
+                        <span style={{fontSize:12,color:T.text.primary,fontWeight:500,flex:1}}>{t.label}</span>
+                        <span style={{fontSize:11,color:T.text.secondary,maxWidth:140,textAlign:"right"}}>{t.result}</span>
+                      </div>);})}
+                  </div>
+                </div>
+                {/* §4.5 */}
+                <div style={{marginBottom:16}}><div style={{fontSize:13,fontWeight:600,color:T.text.primary,marginBottom:8}}>§4.5 Governance Intervention</div>
+                  <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr 1fr",gap:8,marginBottom:10}}>
+                    {[{l:"Stop Code",v:ep.governance?.stopCodes||0,ok:(ep.governance?.stopCodes||0)===0},{l:"Human Review",v:(ep.governance?.humanReviews||0)+"회",ok:true},{l:"Override",v:ep.governance?.overrides||0,ok:(ep.governance?.overrides||0)===0},{l:"Escalation",v:ep.governance?.escalations||0,ok:(ep.governance?.escalations||0)===0}].map((g,i)=>(
+                      <div key={i} style={{padding:"10px 12px",borderRadius:T.radius.md,background:g.ok?T.state.complete.bg:T.state.blocked.bg,border:"1px solid "+(g.ok?T.state.complete.border:T.state.blocked.border),textAlign:"center"}}><div style={{fontSize:18,fontWeight:700,color:g.ok?T.state.complete.fg:T.state.blocked.fg}}>{g.v}</div><div style={{fontSize:10,color:g.ok?T.state.complete.fg:T.state.blocked.fg}}>{g.l}</div></div>))}
+                  </div>
+                  {(ep.governance?.details||[]).length>0?(ep.governance.details).map((d,i)=>(
+                    <div key={i} style={{padding:10,borderRadius:T.radius.md,background:T.surfAlt,border:"1px solid "+T.border.light,marginBottom:4}}>
+                      <span style={{fontSize:10,fontWeight:600,padding:"2px 8px",borderRadius:T.radius.full,color:T.state.review.fg,background:T.state.review.bg}}>{d.type}</span>
+                      <span style={{fontSize:10,color:T.text.muted,marginLeft:8}}>{d.time}</span>
+                      <div style={{marginTop:4}}><EInfoRow l="판단자" v={d.actor}/><EInfoRow l="결정" v={d.decision} ok={d.decision==="APPROVE"}/><EInfoRow l="사유" v={d.reason}/></div>
+                    </div>)):
+                    <div style={{padding:12,textAlign:"center",color:T.text.muted,fontSize:12}}>Governance 개입 없음</div>}
+                  {ep.governance?.postObligation&&<div style={{marginTop:6,padding:"8px 12px",borderRadius:T.radius.md,background:T.state.review.bg,border:"1px solid "+T.state.review.border,fontSize:12,color:T.state.review.fg}}>⚠️ 사후 의무: {ep.governance.postObligation}</div>}
+                </div>
+                {/* Supplier */}
+                {ep.supplierEvidence?.selected&&<div style={{marginBottom:16}}><div style={{fontSize:13,fontWeight:600,color:T.text.primary,marginBottom:8}}>공급사 Evidence</div>
+                  <div style={{padding:12,borderRadius:T.radius.md,border:"2px solid "+T.state.complete.accent,background:T.state.complete.bg}}>
+                    <div style={{display:"flex",justifyContent:"space-between"}}><span style={{fontSize:14,fontWeight:700,color:T.state.complete.fg}}>{ep.supplierEvidence.selected.name}</span><span style={{fontSize:14,fontWeight:700,color:T.state.complete.fg}}>{ep.supplierEvidence.selected.score}점</span></div>
+                    {ep.supplierEvidence.runner&&<div style={{fontSize:11,color:T.text.secondary,marginTop:4}}>차순위: {ep.supplierEvidence.runner.name} ({ep.supplierEvidence.runner.score}점)</div>}
+                    {ep.supplierEvidence.benchmark?.market&&<div style={{fontSize:11,color:T.text.muted,marginTop:2}}>시장가: {ep.supplierEvidence.benchmark.market} · 편차: {ep.supplierEvidence.benchmark.deviation||"—"}</div>}
+                  </div>
+                </div>}
+                <div style={{padding:10,borderRadius:T.radius.sm,background:T.surfAlt,border:"1px solid "+T.border.light,fontSize:11,color:T.text.secondary,lineHeight:1.6}}>
+                  ℹ️ Immutable Log · A-T: A05→T07+T13 / A06→T08 / A07→T06+T10 / A08→T13+T14 / A09→T08+T13 / A10→T12+T11 / A13→T15
+                </div>
+              </div>
+            </>}
+
+            {/* Footer */}
+            <div style={{padding:"12px 20px",borderTop:"1px solid "+T.border.light,display:"flex",gap:8,flexShrink:0}}>
+              {screenMode==="evidence_detail"&&<><button style={{padding:"8px 16px",borderRadius:T.radius.full,border:"1px solid "+T.border.medium,background:T.surface,fontSize:12,color:T.text.secondary,cursor:"pointer"}}>PDF Export</button>
+              <button style={{padding:"8px 16px",borderRadius:T.radius.full,border:"1px solid "+T.border.medium,background:T.surface,fontSize:12,color:T.text.secondary,cursor:"pointer"}}>감사 리포트</button></>}
+              <button onClick={()=>{setScreenMode("execute");setSelectedEvidence(null);}} style={{padding:"8px 16px",borderRadius:T.radius.full,border:"none",background:T.brand,fontSize:12,color:"#FFF",fontWeight:600,cursor:"pointer",marginLeft:"auto"}}>구매 실행으로 돌아가기</button>
+            </div>
+          </div>
+        </div>;
+      })()}
+
+      </div>
+    </div>
+  );
+}
+
+ReactDOM.createRoot(document.getElementById('root')).render(<App />);
+</script>
+</body>
+</html>

@@ -1,0 +1,407 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>BSM - 09 Stop Code (PRO v2.0)</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { font-family: 'Pretendard Variable', Pretendard, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; }
+  #root { width: 100%; min-height: 100vh; }
+</style>
+</head>
+<body>
+<div id="root"></div>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.9/babel.min.js"></script>
+<script type="text/babel">
+const { useState, useRef, useEffect, useCallback, useMemo } = React;
+
+
+
+/* ═══════════════════════════════════════════════════════════════
+   AI-Embedded BSM PRO — Stop Code 거버넌스
+   bsm_pro_stopcode.jsx v2.0
+   ─── Canonical Alignment ───
+   Stop Code Governance Standard v1.0 (§3~7)
+   Stop Code Code Set Definition v1.1 (§2~7)
+   Stop Code UI Flag Standard v1.0 (4-Layer §4, Severity §6, §8 금지 표현)
+   Stop Code Data Model v1.0 (stop_code_event §3.2)
+   Stop Code Runtime Handling Sequence v1.1 (Lifecycle §5)
+   Exception & Override Governance Standard v1.0
+   State: 5-State Model (EXECUTION_BLOCKED / HUMAN_REVIEW_REQUIRED)
+   ═══════════════════════════════════════════════════════════════ */
+
+var C = {
+  brand:"#1E3A8A", white:"#FFFFFF", bg:"#F8FAFC",
+  t1:"#0F172A", t2:"#475569", t3:"#94A3B8",
+  bl:"#E2E8F0", bm:"#CBD5E1",
+  r:{sm:6,md:10,lg:14,xl:20,full:9999},
+  ok:{bg:"#F0FDF4",fg:"#166534",ac:"#22C55E",bd:"#86EFAC"},
+  warn:{bg:"#FFFBEB",fg:"#92400E",ac:"#F59E0B",bd:"#FCD34D"},
+  err:{bg:"#FEF2F2",fg:"#991B1B",ac:"#EF4444",bd:"#FCA5A5"},
+  info:{bg:"#EFF6FF",fg:"#1E40AF",ac:"#3B82F6",bd:"#93C5FD"},
+};
+
+// ── Severity 4단계 (UI Flag Standard §6) ──
+var SEV4={
+  Low:{bg:"#F1F5F9",fg:"#475569",ac:"#94A3B8",bd:"#CBD5E1",label:"Low"},
+  Medium:{bg:"#FFFBEB",fg:"#92400E",ac:"#F59E0B",bd:"#FCD34D",label:"Medium"},
+  High:{bg:"#FEF2F2",fg:"#991B1B",ac:"#EF4444",bd:"#FCA5A5",label:"High"},
+  Critical:{bg:"#7F1D1D",fg:"#FFFFFF",ac:"#DC2626",bd:"#991B1B",label:"Critical"},
+};
+
+// ── 5-State 매핑 ──
+var STATE5={
+  EXECUTION_BLOCKED:{label:"차단됨",bg:"#FEF2F2",fg:"#991B1B"},
+  HUMAN_REVIEW_REQUIRED:{label:"검토 필요",bg:"#FFFBEB",fg:"#92400E"},
+  IN_PROGRESS:{label:"진행 중",bg:"#EFF6FF",fg:"#1E40AF"},
+  COMPLETED:{label:"완료",bg:"#F0FDF4",fg:"#166534"},
+};
+
+// ── Stop Code 분류 (Governance Standard §6) ──
+var STOP_CLASSES = [
+  {id:"CORE",name:"Core Governance",desc:"MVP 단계 기본 Stop Code",count:12,color:C.err},
+  {id:"EXT",name:"Extended Operational",desc:"운영 데이터 축적 후 확장",count:8,color:C.warn},
+  {id:"STRUCT",name:"Structural Responsibility",desc:"조직 판단·책임 분석 목적",count:5,color:C.info},
+];
+
+// ── 활성 Stop Code (Data Model §3.2 정렬 + trigger_engine + 5-State + detected_at) ──
+var ACTIVE_EVENTS = [
+  {id:"SC-2025-0847",code:"POLICY_VIOLATION",class:"CORE",severity:"High",stopMode:"Soft",
+    title:"예산 초과 구매 시도",pr:"PR-2025-1095",requester:"이준영 차장",amount:"₩2.5억",gt:"G34",
+    triggerEngine:"T13 Policy Density Scan",triggerLayer:"Governance Validation",
+    detectedAt:"2025-03-20 11:42",
+    trigger:"예산 잔액 ₩1.2억 < 요청 ₩2.5억",
+    state5:"HUMAN_REVIEW_REQUIRED",elapsed:"3.2일",escalated:true,
+    actions:[{type:"승인 강화",desc:"CFO + CEO 동시 승인 필요"},{type:"예산 확인",desc:"추경 예산 편성 검토"}]},
+  {id:"SC-2025-0851",code:"SUPPLIER_RISK",class:"CORE",severity:"Medium",stopMode:"Soft",
+    title:"리스크 공급사 거래",pr:"PR-2025-1098",requester:"한수진 사원",amount:"₩810만",gt:"G06",
+    triggerEngine:"T07 Supplier Risk Profiling",triggerLayer:"Commercial Evaluation",
+    detectedAt:"2025-03-23 09:15",
+    trigger:"글로벌테크 리스크 등급 C (62점) — 납기 이행률 55%",
+    state5:"HUMAN_REVIEW_REQUIRED",elapsed:"0.3일",escalated:false,
+    actions:[{type:"승인 강화",desc:"부서장 추가 승인"},{type:"리스크 주의",desc:"대체 공급사 검토 권고"}]},
+  {id:"SC-2025-0853",code:"COMPETITION_INSUFFICIENT",class:"CORE",severity:"Medium",stopMode:"Soft",
+    title:"경쟁 견적 부족",pr:"PR-2025-1092",requester:"박지민 대리",amount:"₩8,500만",gt:"G11",
+    triggerEngine:"T08 Quote Parsing Engine",triggerLayer:"Commercial Evaluation",
+    detectedAt:"2025-03-21 14:30",
+    trigger:"견적 수신 2곳 / 최소 기준 3곳",
+    state5:"HUMAN_REVIEW_REQUIRED",elapsed:"2.1일",escalated:false,
+    actions:[{type:"추가 견적",desc:"1곳 추가 견적 요청"},{type:"사유서",desc:"2곳 견적 진행 사유서 작성"}]},
+  {id:"SC-2025-0856",code:"CONTRACT_EXPIRY",class:"EXT",severity:"Low",stopMode:"Soft",
+    title:"계약 만료 임박",pr:"—",requester:"시스템",amount:"₩1.4억/년",gt:"G18",
+    triggerEngine:"T11 Legal Clause Tracker",triggerLayer:"Governance Validation",
+    detectedAt:"2025-03-22 06:00",
+    trigger:"ISS코리아 통합 시설관리 계약 만료 30일 이내 (2025-04-30)",
+    state5:"IN_PROGRESS",elapsed:"—",escalated:false,
+    actions:[{type:"갱신 검토",desc:"갱신 vs 재입찰 결정 필요"},{type:"알림",desc:"시설팀 최과장에게 알림 발송"}]},
+  {id:"SC-2025-0858",code:"SOLE_SOURCE_REPEAT",class:"STRUCT",severity:"Medium",stopMode:"Soft",
+    title:"반복 수의계약",pr:"PR-2025-1101",requester:"최민수 주임",amount:"₩1,400만",gt:"G21",
+    triggerEngine:"T13 Policy Density Scan",triggerLayer:"Governance Validation",
+    detectedAt:"2025-03-22 10:20",
+    trigger:"ISS코리아 수의계약 3회 연속 — 경쟁 구매 전환 검토 필요",
+    state5:"HUMAN_REVIEW_REQUIRED",elapsed:"0.8일",escalated:false,
+    actions:[{type:"경쟁 전환",desc:"다음 계약 시 RFQ 의무화"},{type:"사유 기록",desc:"수의계약 사유서 보강"}]},
+];
+
+// ── 해제 이력 + Override 여부 (Exception & Override Standard) ──
+var RESOLVED = [
+  {id:"SC-2025-0840",code:"BUDGET_EXCEED",severity:"High",title:"예산 초과 (클라우드)",
+    resolution:"추경 승인 후 해제",resolver:"CFO",days:2.1,date:"2025-03-18",
+    override:false,state5:"COMPLETED",triggerEngine:"T13"},
+  {id:"SC-2025-0835",code:"SUPPLIER_RISK",severity:"Medium",title:"리스크 공급사 (나스미디어)",
+    resolution:"부서장 승인 + 모니터링 조건부 해제",resolver:"이부서장",days:1.5,date:"2025-03-15",
+    override:true,overrideReason:"거래 이력 양호, 모니터링 조건부 진행",state5:"COMPLETED",triggerEngine:"T07"},
+  {id:"SC-2025-0828",code:"COMPETITION_INSUFFICIENT",severity:"Medium",title:"2곳 견적 진행",
+    resolution:"2곳 견적 사유서 승인",resolver:"박본부장",days:3.0,date:"2025-03-12",
+    override:true,overrideReason:"시장 내 적격 업체 2곳뿐, 경쟁 충분성 인정",state5:"COMPLETED",triggerEngine:"T08"},
+  {id:"SC-2025-0820",code:"BLACKLIST_VENDOR",severity:"Critical",title:"블랙리스트 업체 접촉",
+    resolution:"Hard Stop 유지 — 거래 차단",resolver:"시스템",days:0,date:"2025-03-08",
+    override:false,state5:"EXECUTION_BLOCKED",triggerEngine:"T14"},
+  {id:"SC-2025-0815",code:"APPROVAL_BYPASS",severity:"Critical",title:"승인 없이 발주 시도",
+    resolution:"발주 취소 + 재승인 후 진행",resolver:"김팀장",days:0.5,date:"2025-03-05",
+    override:false,state5:"COMPLETED",triggerEngine:"T15"},
+];
+
+// ── 정책 규칙 + trigger_engine ──
+var POLICIES = [
+  {code:"POLICY_VIOLATION",name:"정책 위반",severity:"High",trigger:"승인 미확보, 예산 초과, 절차 누락",action:"승인 강화 + 감사 기록",auto:false,engine:"T13"},
+  {code:"SUPPLIER_RISK",name:"공급사 리스크",severity:"Medium",trigger:"리스크 등급 C 이하, 납기 이행률 70% 미만",action:"승인 강화 + 대체 공급사 검토 권고",auto:false,engine:"T07"},
+  {code:"COMPETITION_INSUFFICIENT",name:"경쟁 부족",severity:"Medium",trigger:"견적 3곳 미달 (500만원 초과 건)",action:"추가 견적 또는 사유서",auto:false,engine:"T08"},
+  {code:"CONTRACT_EXPIRY",name:"계약 만료",severity:"Low",trigger:"계약 만료 30일 이내",action:"갱신/재입찰 검토 알림",auto:true,engine:"T11"},
+  {code:"SOLE_SOURCE_REPEAT",name:"반복 수의",severity:"Medium",trigger:"동일 공급사 수의계약 3회 연속",action:"다음 건 RFQ 의무화",auto:false,engine:"T13"},
+  {code:"BLACKLIST_VENDOR",name:"블랙리스트",severity:"Critical",trigger:"제재/블랙리스트 공급사 거래 시도",action:"거래 즉시 차단 (Hard Stop)",auto:true,engine:"T14"},
+  {code:"BUDGET_EXCEED",name:"예산 초과",severity:"High",trigger:"예산 잔액 < 요청 금액",action:"추경 승인 또는 요청 축소",auto:false,engine:"T13+T10"},
+  {code:"APPROVAL_BYPASS",name:"승인 우회",severity:"Critical",trigger:"승인 없이 발주/계약 시도",action:"즉시 차단 + 감사 보고",auto:true,engine:"T15"},
+];
+
+function sevStyle(s){return SEV4[s]||SEV4.Medium;}
+
+function App(){
+  var[tab,setTab]=useState("active");
+  var tabs=[
+    {id:"active",label:"활성",icon:"🔴",count:ACTIVE_EVENTS.length},
+    {id:"resolved",label:"해제 이력",icon:"✅"},
+    {id:"policies",label:"정책 규칙",icon:"📋"},
+    {id:"overview",label:"전체 현황",icon:"📊"},
+  ];
+
+  return(
+  <div style={{width:"100%",height:"100%",background:"#E8ECF1",display:"flex",flexDirection:"column",fontFamily:"'Pretendard Variable',Pretendard,-apple-system,sans-serif",overflow:"hidden"}}>
+    <style>{`@import url('https://cdn.jsdelivr.net/gh/orioncactus/pretendard/dist/web/variable/pretendardvariable-dynamic-subset.css');*{box-sizing:border-box;margin:0;padding:0}::-webkit-scrollbar{width:5px}::-webkit-scrollbar-track{background:transparent}::-webkit-scrollbar-thumb{background:#E2E8F0;border-radius:3px}button{cursor:pointer;font-family:inherit;transition:all .15s}button:hover:not(:disabled){filter:brightness(1.05)}`}</style>
+
+    <div style={{height:28,background:"#2D3748",display:"flex",alignItems:"center",padding:"0 14px",gap:6,flexShrink:0}}>
+      <div style={{display:"flex",gap:4}}><div style={{width:8,height:8,borderRadius:4,background:"#FC5C65"}}/><div style={{width:8,height:8,borderRadius:4,background:"#FED330"}}/><div style={{width:8,height:8,borderRadius:4,background:"#26DE81"}}/></div>
+      <span style={{color:"#A0AEC0",fontSize:10,fontWeight:500,marginLeft:8}}>AI Embedded BSM PRO — Stop Code 거버넌스</span>
+    </div>
+
+    <div style={{flex:1,display:"flex",alignItems:"center",justifyContent:"center",padding:12,overflow:"hidden"}}>
+    <div style={{width:"100%",maxWidth:1060,height:"100%",maxHeight:"88%",display:"flex",flexDirection:"column",borderRadius:C.r.xl,overflow:"hidden",boxShadow:"0 24px 80px rgba(0,0,0,.35)",background:C.white}}>
+
+      {/* Header */}
+      <div style={{padding:"10px 20px",background:"linear-gradient(135deg,#991B1B,#DC2626)",display:"flex",alignItems:"center",justifyContent:"space-between",flexShrink:0}}>
+        <div style={{display:"flex",alignItems:"center",gap:10}}>
+          <div style={{width:32,height:32,borderRadius:8,background:"rgba(255,255,255,.15)",display:"flex",alignItems:"center",justifyContent:"center",fontSize:16}}>🛡️</div>
+          <div>
+            <div style={{display:"flex",alignItems:"center",gap:8}}>
+              <span style={{fontWeight:700,fontSize:16,color:"#FFF"}}>Stop Code 거버넌스</span>
+              <span style={{fontSize:11,color:"rgba(255,255,255,.6)"}}>T07+T08+T11+T13+T14+T15</span>
+            </div>
+            <div style={{fontSize:11,color:"rgba(255,255,255,.7)"}}>실행 통제 · 4단계 Severity · 5-State 연계</div>
+          </div>
+        </div>
+        <div style={{display:"flex",alignItems:"center",gap:6}}>
+          <span style={{fontSize:10,fontWeight:600,padding:"2px 8px",borderRadius:9999,color:"#FFF",background:"rgba(255,255,255,.3)"}}>{"Critical "+ACTIVE_EVENTS.filter(function(e){return e.severity==="Critical";}).length}</span>
+          <span style={{fontSize:10,fontWeight:600,padding:"2px 8px",borderRadius:9999,color:"#FFF",background:"rgba(255,255,255,.2)"}}>{"High "+ACTIVE_EVENTS.filter(function(e){return e.severity==="High";}).length}</span>
+          <span style={{fontSize:10,fontWeight:600,padding:"2px 8px",borderRadius:9999,color:"#FFF",background:"rgba(255,255,255,.15)"}}>PRO</span>
+        </div>
+      </div>
+
+      {/* Tabs */}
+      <div style={{display:"flex",gap:0,borderBottom:"1px solid "+C.bl,flexShrink:0}}>
+        {tabs.map(function(t){var ac=tab===t.id;return(
+          <button key={t.id} onClick={function(){setTab(t.id);}} style={{padding:"9px 14px",fontSize:12,fontWeight:ac?600:400,color:ac?"#991B1B":C.t3,background:"none",border:"none",borderBottom:ac?"2px solid #991B1B":"2px solid transparent",display:"flex",alignItems:"center",gap:4,flexShrink:0}}>
+            <span style={{fontSize:11}}>{t.icon}</span>{t.label}
+            {t.count>0&&<span style={{fontSize:9,fontWeight:700,padding:"1px 5px",borderRadius:9999,background:"#FEF2F2",color:"#991B1B"}}>{t.count}</span>}
+          </button>
+        );})}
+      </div>
+
+      {/* Body */}
+      <div style={{flex:1,overflowY:"auto",padding:16}}>
+
+        {/* ═══ 활성 ═══ */}
+        {tab==="active"&&<div>
+          {ACTIVE_EVENTS.map(function(ev,i){
+            var sv=sevStyle(ev.severity);
+            var st=STATE5[ev.state5]||STATE5.HUMAN_REVIEW_REQUIRED;
+            return(
+              <div key={i} style={{padding:14,borderRadius:C.r.md,background:sv.bg,border:(ev.severity==="Critical"||ev.severity==="High"?"2px":"1px")+" solid "+sv.bd,marginBottom:10}}>
+                {/* Header */}
+                <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:8}}>
+                  <div style={{display:"flex",alignItems:"center",gap:8}}>
+                    <span style={{fontSize:15,fontWeight:700,color:sv.fg}}>{ev.title}</span>
+                    <span style={{fontSize:10,fontWeight:600,padding:"2px 8px",borderRadius:9999,color:sv.fg,background:sv.bg,border:"1px solid "+sv.ac}}>{ev.severity}</span>
+                    <span style={{fontSize:10,fontWeight:600,padding:"2px 8px",borderRadius:9999,color:st.fg,background:st.bg}}>{st.label}</span>
+                    {ev.escalated&&<span style={{fontSize:10,fontWeight:600,padding:"2px 8px",borderRadius:9999,color:"#991B1B",background:"#FEF2F2"}}>Escalated</span>}
+                  </div>
+                  <span style={{fontSize:11,color:C.t3}}>{ev.id}</span>
+                </div>
+                {/* Trigger (Context Flag §4.2) */}
+                <div style={{padding:"8px 10px",borderRadius:C.r.sm,background:C.white,border:"1px solid "+sv.bd,marginBottom:8}}>
+                  <div style={{fontSize:11,fontWeight:600,color:sv.fg,marginBottom:2}}>Trigger</div>
+                  <div style={{fontSize:12,color:C.t1}}>{ev.trigger}</div>
+                </div>
+                {/* Context (Data Model §3.2) */}
+                <div style={{display:"flex",gap:10,fontSize:11,color:C.t2,marginBottom:4,flexWrap:"wrap"}}>
+                  {ev.pr!=="—"&&<span>{"PR: "+ev.pr}</span>}
+                  <span>{"요청: "+ev.requester}</span>
+                  <span>{"금액: "+ev.amount}</span>
+                  <span>{"GT: "+ev.gt}</span>
+                  <span>{"Mode: "+ev.stopMode}</span>
+                </div>
+                <div style={{display:"flex",gap:10,fontSize:10,color:C.t3,marginBottom:8}}>
+                  <span>{"엔진: "+ev.triggerEngine}</span>
+                  <span>{"계층: "+ev.triggerLayer}</span>
+                  <span>{"감지: "+ev.detectedAt}</span>
+                  {ev.elapsed!=="—"&&<span style={{color:parseFloat(ev.elapsed)>2?"#991B1B":"#94A3B8"}}>{"경과: "+ev.elapsed}</span>}
+                </div>
+                {/* Actions (Action Guidance §4.3) */}
+                <div style={{display:"flex",gap:6}}>
+                  {ev.actions.map(function(act,ai){return(
+                    <div key={ai} style={{padding:"5px 10px",borderRadius:C.r.sm,background:C.white,border:"1px solid "+sv.bd,fontSize:11}}>
+                      <span style={{fontWeight:600,color:sv.fg}}>{act.type}</span>
+                      <span style={{color:C.t2,marginLeft:6}}>{act.desc}</span>
+                    </div>
+                  );})}
+                </div>
+              </div>
+            );
+          })}
+        </div>}
+
+        {/* ═══ 해제 이력 + Override (History Trace §4.4) ═══ */}
+        {tab==="resolved"&&<div>
+          <div style={{fontSize:13,fontWeight:600,color:C.t1,marginBottom:12}}>해제된 Stop Code 이력</div>
+          {RESOLVED.map(function(r,i){
+            var sv=sevStyle(r.severity);
+            var st=STATE5[r.state5]||STATE5.COMPLETED;
+            return(
+              <div key={i} style={{padding:12,borderRadius:C.r.md,background:C.bg,border:"1px solid "+C.bl,marginBottom:8}}>
+                <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:6}}>
+                  <div style={{display:"flex",alignItems:"center",gap:8}}>
+                    <div style={{width:24,height:24,borderRadius:12,background:r.days===0&&r.state5==="EXECUTION_BLOCKED"?"#EF4444":"#22C55E",color:"#FFF",display:"flex",alignItems:"center",justifyContent:"center",fontSize:11,fontWeight:700,flexShrink:0}}>{r.days===0&&r.state5==="EXECUTION_BLOCKED"?"!":"✓"}</div>
+                    <span style={{fontSize:13,fontWeight:500,color:C.t1}}>{r.title}</span>
+                    <span style={{fontSize:10,fontWeight:600,padding:"2px 6px",borderRadius:9999,color:sv.fg,background:sv.bg}}>{r.severity}</span>
+                    <span style={{fontSize:10,fontWeight:600,padding:"2px 6px",borderRadius:9999,color:st.fg,background:st.bg}}>{st.label}</span>
+                    {r.override&&<span style={{fontSize:10,fontWeight:600,padding:"2px 6px",borderRadius:9999,color:"#92400E",background:"#FFFBEB"}}>Override</span>}
+                  </div>
+                  <span style={{fontSize:10,color:C.t3}}>{r.id}</span>
+                </div>
+                <div style={{fontSize:12,color:C.t1,marginBottom:4}}>{r.resolution}</div>
+                {r.override&&<div style={{fontSize:11,color:"#92400E",marginBottom:4,padding:"4px 8px",borderRadius:C.r.sm,background:"#FFFBEB",border:"1px solid #FCD34D"}}>{"Override 사유: "+r.overrideReason}</div>}
+                <div style={{display:"flex",gap:12,fontSize:10,color:C.t3}}>
+                  <span>{"해제: "+r.resolver}</span>
+                  <span>{"소요: "+r.days+"일"}</span>
+                  <span>{r.date}</span>
+                  <span>{"엔진: "+r.triggerEngine}</span>
+                </div>
+              </div>
+            );
+          })}
+
+          {/* Override 통계 */}
+          <div style={{padding:10,borderRadius:C.r.sm,background:"#FFFBEB",border:"1px solid #FCD34D",marginTop:8,fontSize:11,color:"#92400E",lineHeight:1.6}}>
+            <span>{"Override 발생: "+RESOLVED.filter(function(r){return r.override;}).length+"건 / 전체 "+RESOLVED.length+"건 ("+Math.round(RESOLVED.filter(function(r){return r.override;}).length/RESOLVED.length*100)+"%). Override 이력은 감사 대응 시 최우선 검토 대상입니다."}</span>
+          </div>
+        </div>}
+
+        {/* ═══ 정책 규칙 ═══ */}
+        {tab==="policies"&&<div>
+          <div style={{fontSize:13,fontWeight:600,color:C.t1,marginBottom:4}}>Stop Code 정책 규칙</div>
+          <div style={{fontSize:11,color:C.t3,marginBottom:12}}>Code Set Definition v1.1 · Severity 4단계 (Low/Medium/High/Critical)</div>
+
+          {POLICIES.map(function(p,i){
+            var sv=sevStyle(p.severity);
+            return(
+              <div key={i} style={{padding:12,borderRadius:C.r.md,background:C.bg,border:"1px solid "+C.bl,marginBottom:8}}>
+                <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:6}}>
+                  <div style={{display:"flex",alignItems:"center",gap:8}}>
+                    <span style={{fontSize:13,fontWeight:600,color:C.t1}}>{p.name}</span>
+                    <span style={{fontSize:10,fontWeight:600,padding:"2px 8px",borderRadius:9999,color:sv.fg,background:sv.bg}}>{p.severity}</span>
+                    {p.auto&&<span style={{fontSize:10,fontWeight:600,padding:"2px 8px",borderRadius:9999,color:"#166534",background:"#F0FDF4"}}>자동</span>}
+                  </div>
+                  <span style={{fontSize:10,color:C.t3}}>{p.code}</span>
+                </div>
+                <div style={{display:"flex",gap:16,fontSize:12,marginBottom:4}}>
+                  <div><span style={{color:C.t3}}>{"Trigger: "}</span><span style={{color:C.t1}}>{p.trigger}</span></div>
+                </div>
+                <div style={{display:"flex",gap:16,fontSize:12}}>
+                  <div><span style={{color:C.t3}}>{"Action: "}</span><span style={{color:sv.fg,fontWeight:500}}>{p.action}</span></div>
+                  <span style={{fontSize:10,color:C.t3}}>{"엔진: "+p.engine}</span>
+                </div>
+              </div>
+            );
+          })}
+
+          {/* Hard-Stop 예외 (§5.3) */}
+          <div style={{padding:12,borderRadius:C.r.md,background:"#7F1D1D",border:"2px solid #991B1B",marginTop:8}}>
+            <div style={{fontSize:12,fontWeight:700,color:"#FFF",marginBottom:6}}>Critical Hard Stop 예외 (즉시 차단)</div>
+            <div style={{fontSize:11,color:"#FCA5A5",lineHeight:1.8}}>
+              <div>1. 법적 거래 금지 품목 거래 시도</div>
+              <div>2. 제재/블랙리스트 공급사 거래 시도</div>
+              <div>3. 시스템 보안 침해 의심 상황</div>
+              <div>4. 재무 승인 구조 완전 부재 상태</div>
+              <div style={{marginTop:4,fontWeight:600}}>{"→ Critical Class · Hard-Stop 유일 적용 대상"}</div>
+            </div>
+          </div>
+        </div>}
+
+        {/* ═══ 전체 현황 ═══ */}
+        {tab==="overview"&&<div>
+          {/* KPI */}
+          <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr 1fr",gap:10,marginBottom:16}}>
+            <div style={{padding:14,borderRadius:C.r.md,background:"#FEF2F2",border:"1px solid #FCA5A5",textAlign:"center"}}>
+              <div style={{fontSize:22,fontWeight:700,color:"#991B1B"}}>{ACTIVE_EVENTS.length}</div>
+              <div style={{fontSize:11,color:"#991B1B"}}>활성 Stop</div>
+            </div>
+            <div style={{padding:14,borderRadius:C.r.md,background:"#FFFBEB",border:"1px solid #FCD34D",textAlign:"center"}}>
+              <div style={{fontSize:22,fontWeight:700,color:"#92400E"}}>{ACTIVE_EVENTS.filter(function(e){return e.escalated;}).length}</div>
+              <div style={{fontSize:11,color:"#92400E"}}>Escalated</div>
+            </div>
+            <div style={{padding:14,borderRadius:C.r.md,background:"#F0FDF4",border:"1px solid #86EFAC",textAlign:"center"}}>
+              <div style={{fontSize:22,fontWeight:700,color:"#166534"}}>{RESOLVED.length}</div>
+              <div style={{fontSize:11,color:"#166534"}}>해제 완료</div>
+            </div>
+            <div style={{padding:14,borderRadius:C.r.md,background:"#EFF6FF",border:"1px solid #93C5FD",textAlign:"center"}}>
+              <div style={{fontSize:22,fontWeight:700,color:"#1E40AF"}}>1.8일</div>
+              <div style={{fontSize:11,color:"#1E40AF"}}>평균 해제</div>
+            </div>
+          </div>
+
+          {/* Severity 분포 (§6 4단계) */}
+          <div style={{fontSize:13,fontWeight:600,color:C.t1,marginBottom:8}}>Severity 분포 (UI Flag §6)</div>
+          <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr 1fr",gap:8,marginBottom:16}}>
+            {["Critical","High","Medium","Low"].map(function(s){
+              var sv=SEV4[s];
+              var cnt=ACTIVE_EVENTS.filter(function(e){return e.severity===s;}).length+RESOLVED.filter(function(r){return r.severity===s;}).length;
+              return <div key={s} style={{padding:10,borderRadius:C.r.md,background:sv.bg,border:"1px solid "+sv.bd,textAlign:"center"}}>
+                <div style={{fontSize:18,fontWeight:700,color:sv.fg}}>{cnt}</div>
+                <div style={{fontSize:10,color:sv.fg}}>{sv.label}</div>
+              </div>;
+            })}
+          </div>
+
+          {/* 분류 체계 */}
+          <div style={{fontSize:13,fontWeight:600,color:C.t1,marginBottom:8}}>Stop Code 분류 체계 (§6)</div>
+          {STOP_CLASSES.map(function(cls,i){return(
+            <div key={i} style={{padding:12,borderRadius:C.r.md,background:cls.color.bg,border:"1px solid "+cls.color.bd,marginBottom:8,display:"flex",justifyContent:"space-between",alignItems:"center"}}>
+              <div>
+                <span style={{fontSize:14,fontWeight:600,color:cls.color.fg}}>{cls.name}</span>
+                <span style={{fontSize:11,color:cls.color.fg,marginLeft:8}}>{cls.desc}</span>
+              </div>
+              <span style={{fontSize:18,fontWeight:700,color:cls.color.fg}}>{cls.count+"종"}</span>
+            </div>
+          );})}
+
+          {/* Lifecycle */}
+          <div style={{fontSize:13,fontWeight:600,color:C.t1,marginTop:12,marginBottom:8}}>Stop Code Lifecycle (Handling Sequence §5)</div>
+          <div style={{display:"flex",alignItems:"center",gap:6,flexWrap:"wrap"}}>
+            {["Signal 감지","Stop Code 검증","5-State 전이","Stop 유지/해제","Retry / Review / Escalation"].map(function(step,i){
+              var bg=i<2?"#FEF2F2":i===2?"#FFFBEB":i===3?"#EFF6FF":"#F0FDF4";
+              var bd=i<2?"#FCA5A5":i===2?"#FCD34D":i===3?"#93C5FD":"#86EFAC";
+              var fg=i<2?"#991B1B":i===2?"#92400E":i===3?"#1E40AF":"#166534";
+              return(
+              <div key={i} style={{display:"flex",alignItems:"center",gap:6}}>
+                <div style={{padding:"6px 12px",borderRadius:C.r.sm,background:bg,border:"1px solid "+bd,fontSize:11,fontWeight:600,color:fg}}>{step}</div>
+                {i<4&&<span style={{color:C.t3}}>→</span>}
+              </div>
+            );})}
+          </div>
+
+          {/* 운영 원칙 */}
+          <div style={{padding:12,borderRadius:C.r.md,background:"#EFF6FF",border:"1px solid #93C5FD",marginTop:12}}>
+            <div style={{fontSize:12,fontWeight:600,color:"#1E40AF",marginBottom:6}}>Stop Code 운영 원칙 (UI Flag §2 + §8)</div>
+            <div style={{fontSize:11,color:"#1E40AF",lineHeight:1.8}}>
+              <div>{"1. Stop Code ≠ 시스템 오류. 거버넌스 이벤트 기록 코드 (§2.1~2.2)"}</div>
+              <div>{"2. Soft-Stop: 실행 계속 + 승인 강화 + 감사 기록 (§5.2)"}</div>
+              <div>{"3. Hard-Stop: Critical Class에만 적용 — 4가지 예외 조건 (§5.3)"}</div>
+              <div>{"4. UI는 공포 유발이 아닌 주의·검토·투명성 확보 목적 (§2.4)"}</div>
+              <div>{"5. 모든 Stop Code는 Audit Trail에 Immutable Log로 기록 (§7)"}</div>
+              <div>{"6. Override 발생 시 사유 + complianceImpactLevel 별도 기록"}</div>
+            </div>
+          </div>
+        </div>}
+
+      </div>
+    </div>
+    </div>
+  </div>);
+}
+
+ReactDOM.createRoot(document.getElementById('root')).render(<App />);
+</script>
+</body>
+</html>

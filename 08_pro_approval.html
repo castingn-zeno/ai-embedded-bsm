@@ -1,0 +1,434 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>BSM - 08 승인·거버넌스 (PRO v2.0)</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { font-family: 'Pretendard Variable', Pretendard, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; }
+  #root { width: 100%; min-height: 100vh; }
+</style>
+</head>
+<body>
+<div id="root"></div>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.9/babel.min.js"></script>
+<script type="text/babel">
+const { useState, useRef, useEffect, useCallback, useMemo } = React;
+
+
+
+/* ═══════════════════════════════════════════════════════════════
+   AI-Embedded BSM PRO — 승인·거버넌스 관리
+   bsm_pro_approval.jsx v2.0
+   ─── Canonical Alignment ───
+   Service: CEO Functional Scope v1.0 (§3.1~3.4)
+   T-Series: T11 Legal Clause + T12 Clause Assembly + T13 Policy Density
+             + T14 Ethical Compliance + T15 Event Trigger
+   Control: Control Profile Library v1.0 (5 Profiles)
+   Policy: Policy Rule Configuration Framework v1.0 (5 Layers)
+   State: 5-State Model (Freeze v1.1)
+   Output: §6.1 Governance Signal + §6.2 Approval Map + §6.3 Contract Indicator + §6.4 Blocking Flag
+   ═══════════════════════════════════════════════════════════════ */
+
+var C = {
+  brand:"#1E3A8A", brandLt:"#2563EB", white:"#FFFFFF", bg:"#F8FAFC",
+  t1:"#0F172A", t2:"#475569", t3:"#94A3B8",
+  bl:"#E2E8F0", bm:"#CBD5E1",
+  r:{sm:6,md:10,lg:14,xl:20,full:9999},
+  ok:{bg:"#F0FDF4",fg:"#166534",ac:"#22C55E",bd:"#86EFAC"},
+  warn:{bg:"#FFFBEB",fg:"#92400E",ac:"#F59E0B",bd:"#FCD34D"},
+  err:{bg:"#FEF2F2",fg:"#991B1B",ac:"#EF4444",bd:"#FCA5A5"},
+  info:{bg:"#EFF6FF",fg:"#1E40AF",ac:"#3B82F6",bd:"#93C5FD"},
+};
+
+// 5-State 매핑
+var STATE_MAP = {
+  READY:{label:"대기",bg:"#F1F5F9",fg:"#475569"},
+  IN_PROGRESS:{label:"진행 중",bg:"#EFF6FF",fg:"#1E40AF"},
+  HUMAN_REVIEW_REQUIRED:{label:"검토 필요",bg:"#FFFBEB",fg:"#92400E"},
+  EXECUTION_BLOCKED:{label:"차단됨",bg:"#FEF2F2",fg:"#991B1B"},
+  COMPLETED:{label:"완료",bg:"#F0FDF4",fg:"#166534"},
+};
+
+// ── 승인 규칙 (Seed Template 4_승인규칙 + Control Profile Library §5) ──
+var RULES = [
+  {id:"APR-001",name:"소액 구매",range:"100만원 이하",levels:["자동 승인"],auto:true,gt:"G01~G10",profile:"Low Risk",
+    desc:"카탈로그·소액 품목은 별도 승인 없이 자동 처리됩니다.",engine:"T15",
+    stats:{total:847,avgDays:0,pending:0}},
+  {id:"APR-002",name:"일반 구매",range:"100만~500만원",levels:["팀장"],auto:false,gt:"G06~G08, G26",profile:"Standard",
+    desc:"팀장 1단계 승인. 평균 0.5일 소요.",engine:"T13+T15",
+    stats:{total:284,avgDays:0.5,pending:3}},
+  {id:"APR-003",name:"중액 구매",range:"500만~2,000만원",levels:["팀장","부서장"],auto:false,gt:"G11~G12, G21~G23",profile:"Competitive",
+    desc:"팀장 → 부서장 2단계 승인. 평균 1.2일 소요.",engine:"T13+T14+T15",
+    stats:{total:89,avgDays:1.2,pending:5}},
+  {id:"APR-004",name:"고액 구매",range:"2,000만~1억원",levels:["팀장","부서장","본부장"],auto:false,gt:"G13~G15, G24~G25, G28",profile:"Strategic",
+    desc:"팀장 → 부서장 → 본부장 3단계 승인. 평균 2.8일 소요.",engine:"T11+T12+T13+T14+T15",
+    stats:{total:18,avgDays:2.8,pending:2}},
+  {id:"APR-005",name:"전략 구매",range:"1억원 초과",levels:["팀장","부서장","본부장","CFO","CEO"],auto:false,gt:"G33~G34",profile:"Full Governance",
+    desc:"5단계 승인. 경영진 검토 필수. 평균 5.4일 소요.",engine:"T11+T12+T13+T14+T15",
+    stats:{total:4,avgDays:5.4,pending:1}},
+];
+
+// ── 대기 중 승인 건 (5-State 연계) ──
+var PENDING = [
+  {id:"PR-2025-1089",title:"서버 장비 2대",requester:"김형주 과장 (IT팀)",amount:"₩4,200만",rule:"APR-003",currentLevel:"부서장",waited:"1.5일",state5:"HUMAN_REVIEW_REQUIRED",urgency:"normal",engine:"T13"},
+  {id:"PR-2025-1092",title:"마케팅 대행 계약",requester:"박지민 대리 (마케팅팀)",amount:"₩8,500만",rule:"APR-004",currentLevel:"본부장",waited:"2.1일",state5:"HUMAN_REVIEW_REQUIRED",urgency:"normal",engine:"T13+T14"},
+  {id:"PR-2025-1095",title:"ERP 컨설팅",requester:"이준영 차장 (경영기획)",amount:"₩2.5억",rule:"APR-005",currentLevel:"CFO",waited:"3.2일",state5:"HUMAN_REVIEW_REQUIRED",urgency:"high",engine:"T11+T13+T14"},
+  {id:"PR-2025-1098",title:"노트북 5대",requester:"한수진 사원 (인사팀)",amount:"₩810만",rule:"APR-003",currentLevel:"팀장",waited:"0.3일",state5:"HUMAN_REVIEW_REQUIRED",urgency:"normal",engine:"T13"},
+  {id:"PR-2025-1101",title:"청소용역 갱신",requester:"최민수 주임 (시설팀)",amount:"₩1,400만",rule:"APR-003",currentLevel:"부서장",waited:"0.8일",state5:"HUMAN_REVIEW_REQUIRED",urgency:"normal",engine:"T13+T12"},
+  {id:"PR-2025-1103",title:"화재감지기 긴급",requester:"김형주 과장 (IT팀)",amount:"₩350만",rule:"APR-002",currentLevel:"팀장",waited:"0.1일",state5:"HUMAN_REVIEW_REQUIRED",urgency:"emergency",engine:"T13"},
+];
+
+// ── NEW §3.2 계약 실행 통제 이벤트 ──
+var CONTRACT_GOV = [
+  {id:"CON-EVT-001",title:"ISS코리아 시설관리 계약 갱신",type:"갱신 필요",contract:"CON-2024-005",amount:"₩1.4억/년",exp:"2025-04-30",
+    engine:"T11+T12",signal:"Contract Governance",status:"검토 필요",
+    detail:"계약 만료 D-37. 조항 변경 없이 자동 갱신 가능. 시장가 3% 하락으로 단가 재협상 권장."},
+  {id:"CON-EVT-002",title:"코웨이 정수기 렌탈 갱신",type:"갱신 필요",contract:"CON-2024-012",amount:"₩1.2억/년",exp:"2025-09-30",
+    engine:"T11+T12",signal:"Contract Governance",status:"사전 검토",
+    detail:"계약 만료 D-190. 현재 조건 유지 가능. 공기청정기 계약과 통합 갱신 시 볼륨 할인 가능."},
+  {id:"CON-EVT-003",title:"마케팅 대행 계약 변경",type:"변경 이력",contract:"CON-2025-018",amount:"₩1.2억/년",exp:"2025-12-31",
+    engine:"T11+T14",signal:"Contract Risk Alert",status:"주의",
+    detail:"서비스 범위 변경 2회 발생. 원계약 대비 20% 범위 확대. 추가 비용 발생 가능성 점검 필요."},
+  {id:"CON-EVT-004",title:"클라우드 인프라 조항 검증",type:"조항 검증",contract:"CON-2024-001",amount:"₩1.8억/년",exp:"2025-06-30",
+    engine:"T11+T12+T14",signal:"Governance Control",status:"적합",
+    detail:"12개 주요 조항 자동 검증 완료. SLA 99.9%, 면책 한도 연간 계약금액 이내, 해지 조건 적합."},
+];
+
+// ── NEW §3.4 진행 통제 이벤트 ──
+var PROCESS_EVENTS = [
+  {id:"PRC-001",type:"BLOCKED",title:"보안 솔루션 구매 차단",trigger:"T14 Ethical Compliance 위반 가능성",state5:"EXECUTION_BLOCKED",
+    detail:"공급사 S사의 ESG 인증 만료. 본부장 이상 승인 없이 진행 불가.",action:"Governance Escalation 필요",time:"2025-03-20 14:22"},
+  {id:"PRC-002",type:"HOLD",title:"예산 초과 자동 HOLD",trigger:"T13 Policy Density — Cost Control §6.2",state5:"EXECUTION_BLOCKED",
+    detail:"물류팀 연간 예산 120% 초과 상태. 추가 예산 배정 승인 필요.",action:"CFO 추가 승인 필요",time:"2025-03-19 09:45"},
+  {id:"PRC-003",type:"RE_EVAL",title:"수의계약 재검토 요청",trigger:"T13 Policy — 수의계약 3회 연속",state5:"HUMAN_REVIEW_REQUIRED",
+    detail:"동일 공급사 수의계약 3회 연속. 경쟁 입찰 전환 필요성 검토.",action:"부서장 재검토 승인",time:"2025-03-18 16:30"},
+  {id:"PRC-004",type:"AUDIT",title:"감사 추적 자동 기록",trigger:"T15 Event Trigger — 고액 완료",state5:"COMPLETED",
+    detail:"ERP 컨설팅 ₩2.5억 건 완료. 전체 Decision Trace + Evidence Package 자동 생성.",action:"Evidence 패키지 저장됨",time:"2025-03-17 11:00"},
+  {id:"PRC-005",type:"STATE_CONFIRM",title:"상태 확정 요청",trigger:"T15 Event Trigger — 승인 완료 후",state5:"IN_PROGRESS",
+    detail:"서버 장비 구매 승인 완료. 발주 실행 상태 확정 대기.",action:"실행 상태 확정 필요",time:"2025-03-21 10:15"},
+];
+
+// ── 승인 이력 ──
+var HISTORY = [
+  {id:"PR-2025-1085",title:"정수기 렌탈 추가",amount:"₩120만",rule:"APR-002",result:"승인",approver:"김팀장",days:0.3,state5:"COMPLETED"},
+  {id:"PR-2025-1082",title:"사무가구 교체",amount:"₩4,800만",rule:"APR-004",result:"승인",approver:"박본부장",days:2.1,state5:"COMPLETED"},
+  {id:"PR-2025-1079",title:"보안 솔루션",amount:"₩6,200만",rule:"APR-004",result:"반려",approver:"이부서장",days:1.8,state5:"EXECUTION_BLOCKED"},
+  {id:"PR-2025-1076",title:"연간 법률자문",amount:"₩3,600만",rule:"APR-004",result:"승인",approver:"최본부장",days:3.2,state5:"COMPLETED"},
+  {id:"PR-2025-1073",title:"클라우드 전환",amount:"₩1.8억",rule:"APR-005",result:"승인",approver:"CEO",days:5.1,state5:"COMPLETED"},
+];
+
+// ── 승인자 ──
+var APPROVERS = [
+  {name:"김철수 팀장",dept:"IT팀",level:"팀장",pending:2,avgDays:0.4,rate:"98%"},
+  {name:"이영희 부서장",dept:"경영지원",level:"부서장",pending:3,avgDays:1.1,rate:"95%"},
+  {name:"박정훈 본부장",dept:"사업본부",level:"본부장",pending:2,avgDays:2.3,rate:"92%"},
+  {name:"최지은 CFO",dept:"재무",level:"CFO",pending:1,avgDays:3.8,rate:"100%"},
+  {name:"정대표 CEO",dept:"경영",level:"CEO",pending:0,avgDays:4.2,rate:"100%"},
+];
+
+var EVT_STYLE={BLOCKED:C.err,HOLD:C.err,RE_EVAL:C.warn,AUDIT:C.info,STATE_CONFIRM:C.ok};
+var CON_STATUS_STYLE={"검토 필요":C.warn,"사전 검토":C.info,"주의":C.err,"적합":C.ok};
+
+function App(){
+  var[tab,setTab]=useState("rules");
+  var tabs=[
+    {id:"rules",label:"승인 규칙",icon:"📋"},
+    {id:"pending",label:"대기 중",icon:"⏳",count:PENDING.length},
+    {id:"contract",label:"계약 통제",icon:"📄",count:CONTRACT_GOV.length},
+    {id:"events",label:"진행 통제",icon:"🛡️",count:PROCESS_EVENTS.filter(function(e){return e.type==="BLOCKED"||e.type==="HOLD";}).length},
+    {id:"approvers",label:"승인자",icon:"👤"},
+    {id:"history",label:"이력",icon:"📜"},
+  ];
+
+  return(
+  <div style={{width:"100%",height:"100%",background:"#E8ECF1",display:"flex",flexDirection:"column",fontFamily:"'Pretendard Variable',Pretendard,-apple-system,sans-serif",overflow:"hidden"}}>
+    <style>{`@import url('https://cdn.jsdelivr.net/gh/orioncactus/pretendard/dist/web/variable/pretendardvariable-dynamic-subset.css');*{box-sizing:border-box;margin:0;padding:0}::-webkit-scrollbar{width:5px}::-webkit-scrollbar-track{background:transparent}::-webkit-scrollbar-thumb{background:#E2E8F0;border-radius:3px}button{cursor:pointer;font-family:inherit;transition:all .15s}button:hover:not(:disabled){filter:brightness(1.05)}`}</style>
+
+    <div style={{height:28,background:"#2D3748",display:"flex",alignItems:"center",padding:"0 14px",gap:6,flexShrink:0}}>
+      <div style={{display:"flex",gap:4}}><div style={{width:8,height:8,borderRadius:4,background:"#FC5C65"}}/><div style={{width:8,height:8,borderRadius:4,background:"#FED330"}}/><div style={{width:8,height:8,borderRadius:4,background:"#26DE81"}}/></div>
+      <span style={{color:"#A0AEC0",fontSize:10,fontWeight:500,marginLeft:8}}>AI Embedded BSM PRO — 승인·거버넌스 관리 (CEO Service)</span>
+    </div>
+
+    <div style={{flex:1,display:"flex",alignItems:"center",justifyContent:"center",padding:12,overflow:"hidden"}}>
+    <div style={{width:"100%",maxWidth:1060,height:"100%",maxHeight:"88%",display:"flex",flexDirection:"column",borderRadius:C.r.xl,overflow:"hidden",boxShadow:"0 24px 80px rgba(0,0,0,.35)",background:C.white}}>
+
+      {/* Header */}
+      <div style={{padding:"10px 20px",background:"linear-gradient(135deg,#1E3A8A,#6366F1)",display:"flex",alignItems:"center",justifyContent:"space-between",flexShrink:0}}>
+        <div style={{display:"flex",alignItems:"center",gap:10}}>
+          <div style={{width:32,height:32,borderRadius:8,background:"rgba(255,255,255,.15)",display:"flex",alignItems:"center",justifyContent:"center",fontSize:16}}>✅</div>
+          <div>
+            <div style={{display:"flex",alignItems:"center",gap:8}}>
+              <span style={{fontWeight:700,fontSize:16,color:"#FFF"}}>승인·거버넌스 관리</span>
+              <span style={{fontSize:11,color:"rgba(255,255,255,.6)"}}>CEO · T11~T15</span>
+            </div>
+            <div style={{fontSize:11,color:"rgba(255,255,255,.7)"}}>승인 라우팅 · 계약 통제 · 진행 차단 · 감사 추적</div>
+          </div>
+        </div>
+        <span style={{fontSize:10,fontWeight:600,padding:"3px 10px",borderRadius:9999,color:"#FFF",background:"rgba(255,255,255,.2)"}}>PRO</span>
+      </div>
+
+      {/* Tabs */}
+      <div style={{display:"flex",gap:0,borderBottom:"1px solid "+C.bl,flexShrink:0,overflowX:"auto"}}>
+        {tabs.map(function(t){var ac=tab===t.id;return(
+          <button key={t.id} onClick={function(){setTab(t.id);}} style={{padding:"9px 14px",fontSize:12,fontWeight:ac?600:400,color:ac?C.brand:C.t3,background:"none",border:"none",borderBottom:ac?"2px solid "+C.brand:"2px solid transparent",display:"flex",alignItems:"center",gap:4,flexShrink:0,whiteSpace:"nowrap"}}>
+            <span style={{fontSize:11}}>{t.icon}</span>{t.label}
+            {t.count>0&&<span style={{fontSize:9,fontWeight:700,padding:"1px 5px",borderRadius:9999,background:t.id==="events"?"#FEF2F2":t.id==="pending"?"#FFFBEB":"#EFF6FF",color:t.id==="events"?"#991B1B":t.id==="pending"?"#92400E":"#1E40AF"}}>{t.count}</span>}
+          </button>
+        );})}
+      </div>
+
+      {/* Body */}
+      <div style={{flex:1,overflowY:"auto",padding:16}}>
+
+        {/* ═══ 승인 규칙 §3.3 ═══ */}
+        {tab==="rules"&&<div>
+          <div style={{fontSize:13,fontWeight:600,color:C.t1,marginBottom:4}}>금액별 승인 경로</div>
+          <div style={{fontSize:11,color:C.t3,marginBottom:12}}>Control Profile Library + Policy Rule Framework 기반</div>
+
+          {RULES.map(function(rule,i){
+            var rc=rule.auto?C.ok:rule.levels.length>=4?C.err:rule.levels.length>=2?C.warn:C.info;
+            return(
+            <div key={i} style={{padding:14,borderRadius:C.r.md,background:C.bg,border:"1px solid "+C.bl,marginBottom:10}}>
+              <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:8}}>
+                <div style={{display:"flex",alignItems:"center",gap:8}}>
+                  <span style={{fontSize:15,fontWeight:700,color:rc.fg}}>{rule.name}</span>
+                  <span style={{fontSize:10,fontWeight:600,padding:"2px 8px",borderRadius:9999,color:rc.fg,background:rc.bg}}>{rule.range}</span>
+                  {rule.auto&&<span style={{fontSize:10,fontWeight:600,padding:"2px 8px",borderRadius:9999,color:"#166534",background:"#F0FDF4"}}>자동</span>}
+                </div>
+                <span style={{fontSize:11,color:C.t3}}>{rule.id}</span>
+              </div>
+              {/* 승인 단계 */}
+              <div style={{display:"flex",alignItems:"center",gap:4,marginBottom:8}}>
+                <div style={{padding:"4px 10px",borderRadius:C.r.sm,background:"#EFF6FF",border:"1px solid #93C5FD",fontSize:11,fontWeight:600,color:"#1E40AF"}}>요청자</div>
+                {rule.levels.map(function(lv,li){return(
+                  <div key={li} style={{display:"flex",alignItems:"center",gap:4}}>
+                    <span style={{color:C.t3,fontSize:12}}>→</span>
+                    <div style={{padding:"4px 10px",borderRadius:C.r.sm,background:rule.auto?"#F0FDF4":rc.bg,border:"1px solid "+(rule.auto?"#86EFAC":rc.bd),fontSize:11,fontWeight:600,color:rule.auto?"#166534":rc.fg}}>{lv}</div>
+                  </div>
+                );})}
+                <span style={{color:C.t3,fontSize:12}}>→</span>
+                <div style={{padding:"4px 10px",borderRadius:C.r.sm,background:"#F0FDF4",border:"1px solid #86EFAC",fontSize:11,fontWeight:600,color:"#166534"}}>실행</div>
+              </div>
+              <div style={{fontSize:12,color:C.t2,marginBottom:6}}>{rule.desc}</div>
+              <div style={{display:"flex",gap:16,fontSize:11,color:C.t3}}>
+                <span>{"GT: "+rule.gt}</span>
+                <span>{"Profile: "+rule.profile}</span>
+                <span>{"엔진: "+rule.engine}</span>
+                <span>{"올해 "+rule.stats.total+"건"}</span>
+                <span>{"평균 "+rule.stats.avgDays+"일"}</span>
+                {rule.stats.pending>0&&<span style={{color:"#92400E",fontWeight:600}}>{"대기 "+rule.stats.pending+"건"}</span>}
+              </div>
+            </div>
+          );})}
+
+          <div style={{padding:12,borderRadius:C.r.md,background:"#EFF6FF",border:"1px solid #93C5FD",marginTop:8}}>
+            <div style={{fontSize:12,fontWeight:600,color:"#1E40AF",marginBottom:4}}>적용 정책 (Policy Rule Framework §4~8)</div>
+            <div style={{fontSize:11,color:"#1E40AF",lineHeight:1.7}}>
+              <div>{"긴급 구매: 1단계 축소 (팀장 즉시 승인 → 사후 보고) — T13 적용"}</div>
+              <div>{"예산 초과: 자동 HOLD → 추가 승인 1단계 추가 — T13 Cost Control §6.2"}</div>
+              <div>{"수의계약: 사유서 필수 + 부서장 이상 승인 — T13+T14"}</div>
+              <div>{"ESG 위반 공급사: 본부장 이상 승인 강제 — T14 Ethical Compliance"}</div>
+            </div>
+          </div>
+        </div>}
+
+        {/* ═══ 대기 중 §3.3 + 5-State ═══ */}
+        {tab==="pending"&&<div>
+          <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:12}}>
+            <div style={{fontSize:13,fontWeight:600,color:C.t1}}>{"승인 대기 ("+PENDING.length+"건)"}</div>
+            <div style={{display:"flex",gap:6}}>
+              <span style={{fontSize:10,fontWeight:600,padding:"2px 8px",borderRadius:9999,color:"#991B1B",background:"#FEF2F2"}}>{"긴급 "+PENDING.filter(function(p){return p.urgency==="emergency";}).length+"건"}</span>
+              <span style={{fontSize:10,fontWeight:600,padding:"2px 8px",borderRadius:9999,color:"#92400E",background:"#FFFBEB"}}>{"지연 위험 "+PENDING.filter(function(p){return parseFloat(p.waited)>2;}).length+"건"}</span>
+            </div>
+          </div>
+
+          {PENDING.map(function(p,i){
+            var isUrg=p.urgency==="emergency";
+            var isDelay=parseFloat(p.waited)>2;
+            var st=STATE_MAP[p.state5]||STATE_MAP.READY;
+            return(
+              <div key={i} style={{padding:12,borderRadius:C.r.md,background:isUrg?"#FEF2F2":isDelay?"#FFFBEB":"#F8FAFC",border:isUrg?"2px solid #EF4444":"1px solid "+C.bl,marginBottom:8}}>
+                <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:6}}>
+                  <div style={{display:"flex",alignItems:"center",gap:8}}>
+                    {isUrg&&<span style={{fontSize:14}}>🚨</span>}
+                    <span style={{fontSize:14,fontWeight:600,color:C.t1}}>{p.title}</span>
+                    <span style={{fontSize:10,color:C.t3}}>{p.id}</span>
+                  </div>
+                  <div style={{display:"flex",alignItems:"center",gap:6}}>
+                    <span style={{fontSize:10,fontWeight:600,padding:"2px 8px",borderRadius:9999,color:st.fg,background:st.bg}}>{st.label}</span>
+                    <span style={{fontSize:16,fontWeight:700,color:C.brand}}>{p.amount}</span>
+                  </div>
+                </div>
+                <div style={{display:"flex",gap:12,fontSize:11,color:C.t2,marginBottom:6}}>
+                  <span>{p.requester}</span>
+                  <span>{p.rule}</span>
+                  <span style={{color:C.t3}}>{"엔진: "+p.engine}</span>
+                </div>
+                <div style={{display:"flex",alignItems:"center",justifyContent:"space-between"}}>
+                  <div style={{display:"flex",alignItems:"center",gap:6}}>
+                    <span style={{fontSize:11,color:C.t3}}>현재:</span>
+                    <span style={{fontSize:12,fontWeight:600,padding:"3px 10px",borderRadius:9999,color:isUrg?"#991B1B":isDelay?"#92400E":"#1E40AF",background:isUrg?"#FEF2F2":isDelay?"#FFFBEB":"#EFF6FF"}}>{p.currentLevel+" 승인 대기"}</span>
+                  </div>
+                  <div style={{display:"flex",alignItems:"center",gap:8}}>
+                    <span style={{fontSize:11,color:isDelay?"#991B1B":"#94A3B8"}}>{"대기 "+p.waited}</span>
+                    <button style={{padding:"5px 12px",borderRadius:C.r.md,border:"none",background:C.brand,color:"#FFF",fontSize:11,fontWeight:600}}>독촉</button>
+                  </div>
+                </div>
+              </div>
+            );
+          })}
+
+          <div style={{padding:12,borderRadius:C.r.md,background:"#FFFBEB",border:"1px solid #FCD34D",marginTop:8}}>
+            <div style={{fontSize:12,fontWeight:600,color:"#92400E",marginBottom:4}}>승인 지연 리스크 (§3.3.5)</div>
+            <div style={{fontSize:11,color:"#92400E",lineHeight:1.6}}>
+              <div>{"PR-2025-1095 (ERP 컨설팅 ₩2.5억): CFO 단계 3.2일 — SLA 기준(3일) 초과"}</div>
+              <div>{"PR-2025-1092 (마케팅 대행 ₩8,500만): 본부장 단계 2.1일 — 내일 SLA 초과 예정"}</div>
+            </div>
+          </div>
+        </div>}
+
+        {/* ═══ NEW: 계약 실행 통제 §3.2 ═══ */}
+        {tab==="contract"&&<div>
+          <div style={{fontSize:13,fontWeight:600,color:C.t1,marginBottom:12}}>계약 실행 통제</div>
+
+          {CONTRACT_GOV.map(function(c,i){
+            var cs=CON_STATUS_STYLE[c.status]||C.info;
+            return(
+            <div key={i} style={{padding:14,borderRadius:C.r.md,background:C.bg,border:"1px solid "+cs.bd,marginBottom:8}}>
+              <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",marginBottom:6}}>
+                <div style={{display:"flex",alignItems:"center",gap:8}}>
+                  <span style={{fontSize:10,fontWeight:600,padding:"2px 8px",borderRadius:9999,color:cs.fg,background:cs.bg}}>{c.type}</span>
+                  <span style={{fontSize:14,fontWeight:600,color:C.t1}}>{c.title}</span>
+                </div>
+                <span style={{fontSize:10,fontWeight:600,padding:"2px 8px",borderRadius:9999,color:cs.fg,background:cs.bg}}>{c.status}</span>
+              </div>
+              <div style={{display:"flex",gap:16,fontSize:11,color:C.t3,marginBottom:6}}>
+                <span>{c.contract}</span>
+                <span>{c.amount}</span>
+                <span>{"만료: "+c.exp}</span>
+                <span>{"엔진: "+c.engine}</span>
+              </div>
+              <div style={{fontSize:12,color:C.t2,lineHeight:1.6}}>{c.detail}</div>
+            </div>
+          );})}
+
+          <div style={{padding:10,borderRadius:C.r.sm,background:"#F0F4FF",border:"1px solid #BFDBFE",fontSize:11,color:"#1E40AF",lineHeight:1.6,marginTop:8}}>
+            <span>{"T11 Legal Clause Tracker + T12 Clause Assembly Checker가 계약 조항을 자동 분석합니다. T14 Ethical Compliance Validator가 윤리·ESG 리스크를 검증합니다."}</span>
+          </div>
+        </div>}
+
+        {/* ═══ NEW: 진행 통제 이벤트 §3.4 ═══ */}
+        {tab==="events"&&<div>
+          <div style={{fontSize:13,fontWeight:600,color:C.t1,marginBottom:12}}>진행 통제 이벤트</div>
+
+          {PROCESS_EVENTS.map(function(e,i){
+            var es=EVT_STYLE[e.type]||C.info;
+            var st=STATE_MAP[e.state5]||STATE_MAP.READY;
+            return(
+            <div key={i} style={{padding:14,borderRadius:C.r.md,background:C.bg,border:"2px solid "+es.bd,marginBottom:8}}>
+              <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",marginBottom:6}}>
+                <div style={{display:"flex",alignItems:"center",gap:8}}>
+                  <span style={{fontSize:10,fontWeight:600,padding:"2px 8px",borderRadius:9999,color:es.fg,background:es.bg}}>{e.type}</span>
+                  <span style={{fontSize:14,fontWeight:600,color:C.t1}}>{e.title}</span>
+                </div>
+                <span style={{fontSize:10,fontWeight:600,padding:"2px 8px",borderRadius:9999,color:st.fg,background:st.bg}}>{st.label}</span>
+              </div>
+              <div style={{fontSize:11,color:C.t3,marginBottom:4}}>{"트리거: "+e.trigger}</div>
+              <div style={{fontSize:12,color:C.t2,lineHeight:1.6,marginBottom:6}}>{e.detail}</div>
+              <div style={{display:"flex",justifyContent:"space-between",alignItems:"center"}}>
+                <span style={{fontSize:10,color:C.t3}}>{e.time}</span>
+                <span style={{padding:"4px 10px",borderRadius:C.r.sm,background:es.bg,border:"1px solid "+es.bd,fontSize:11,fontWeight:500,color:es.fg}}>{"→ "+e.action}</span>
+              </div>
+            </div>
+          );})}
+
+          <div style={{padding:10,borderRadius:C.r.sm,background:"#F0F4FF",border:"1px solid #BFDBFE",fontSize:11,color:"#1E40AF",lineHeight:1.6,marginTop:8}}>
+            <span>{"§3.4: BLOCKED = 즉시 차단 (Governance 승인 필요), HOLD = 자동 보류, RE_EVAL = 재검토 요청, AUDIT = 감사 기록 자동 생성, STATE_CONFIRM = 상태 확정 대기. 5-State 모델과 연계됩니다."}</span>
+          </div>
+        </div>}
+
+        {/* ═══ 승인자 ═══ */}
+        {tab==="approvers"&&<div>
+          <div style={{fontSize:13,fontWeight:600,color:C.t1,marginBottom:12}}>승인자 현황</div>
+
+          {APPROVERS.map(function(a,i){return(
+            <div key={i} style={{padding:12,borderRadius:C.r.md,background:C.bg,border:"1px solid "+C.bl,marginBottom:8}}>
+              <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:6}}>
+                <div style={{display:"flex",alignItems:"center",gap:8}}>
+                  <div style={{width:32,height:32,borderRadius:16,background:C.brand,color:"#FFF",display:"flex",alignItems:"center",justifyContent:"center",fontSize:12,fontWeight:700}}>{a.name.charAt(0)}</div>
+                  <div>
+                    <div style={{fontSize:13,fontWeight:600,color:C.t1}}>{a.name}</div>
+                    <div style={{fontSize:11,color:C.t3}}>{a.dept+" · "+a.level}</div>
+                  </div>
+                </div>
+                {a.pending>0&&<span style={{fontSize:10,fontWeight:600,padding:"2px 8px",borderRadius:9999,color:"#92400E",background:"#FFFBEB"}}>{"대기 "+a.pending+"건"}</span>}
+              </div>
+              <div style={{display:"flex",gap:16,fontSize:11}}>
+                <span style={{color:C.t3}}>{"평균 처리: "}</span><span style={{color:C.t1,fontWeight:600}}>{a.avgDays+"일"}</span>
+                <span style={{color:C.t3}}>{"승인율: "}</span><span style={{color:parseFloat(a.rate)>=95?"#166534":"#92400E",fontWeight:600}}>{a.rate}</span>
+              </div>
+            </div>
+          );})}
+
+          <div style={{padding:12,borderRadius:C.r.md,background:"#FFFBEB",border:"1px solid #FCD34D",marginTop:8}}>
+            <div style={{fontSize:12,fontWeight:600,color:"#92400E",marginBottom:4}}>승인 지연 리스크</div>
+            <div style={{fontSize:11,color:"#92400E",lineHeight:1.6}}>
+              <div>{"PR-2025-1095: CFO 3.2일 대기 — SLA(3일) 초과"}</div>
+              <div>{"PR-2025-1092: 본부장 2.1일 — 내일 SLA 초과 예정"}</div>
+            </div>
+          </div>
+        </div>}
+
+        {/* ═══ 이력 ═══ */}
+        {tab==="history"&&<div>
+          <div style={{fontSize:13,fontWeight:600,color:C.t1,marginBottom:12}}>최근 승인 이력</div>
+
+          {HISTORY.map(function(h,i){
+            var approved=h.result==="승인";
+            var st=STATE_MAP[h.state5]||STATE_MAP.READY;
+            return(
+              <div key={i} style={{display:"flex",alignItems:"center",gap:10,padding:"10px 12px",borderRadius:C.r.md,background:C.bg,border:"1px solid "+C.bl,marginBottom:6}}>
+                <div style={{width:24,height:24,borderRadius:12,background:approved?"#22C55E":"#EF4444",color:"#FFF",display:"flex",alignItems:"center",justifyContent:"center",fontSize:12,fontWeight:700,flexShrink:0}}>{approved?"✓":"✗"}</div>
+                <div style={{flex:1}}>
+                  <div style={{fontSize:13,fontWeight:500,color:C.t1}}>{h.title}</div>
+                  <div style={{fontSize:11,color:C.t3}}>{h.id+" · "+h.rule}</div>
+                </div>
+                <span style={{fontSize:13,fontWeight:600,color:C.brand}}>{h.amount}</span>
+                <span style={{fontSize:11,color:C.t3}}>{h.approver}</span>
+                <span style={{fontSize:11,color:C.t3}}>{h.days+"일"}</span>
+                <span style={{fontSize:10,fontWeight:600,padding:"2px 8px",borderRadius:9999,color:st.fg,background:st.bg}}>{st.label}</span>
+                <span style={{fontSize:10,fontWeight:600,padding:"2px 8px",borderRadius:9999,color:approved?"#166534":"#991B1B",background:approved?"#F0FDF4":"#FEF2F2"}}>{h.result}</span>
+              </div>
+            );
+          })}
+
+          <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:10,marginTop:12}}>
+            <div style={{padding:12,borderRadius:C.r.md,background:"#F0FDF4",border:"1px solid #86EFAC",textAlign:"center"}}>
+              <div style={{fontSize:20,fontWeight:700,color:"#166534"}}>96%</div>
+              <div style={{fontSize:11,color:"#166534"}}>승인율</div>
+            </div>
+            <div style={{padding:12,borderRadius:C.r.md,background:"#EFF6FF",border:"1px solid #93C5FD",textAlign:"center"}}>
+              <div style={{fontSize:20,fontWeight:700,color:"#1E40AF"}}>1.8일</div>
+              <div style={{fontSize:11,color:"#1E40AF"}}>평균 처리</div>
+            </div>
+            <div style={{padding:12,borderRadius:C.r.md,background:"#FFFBEB",border:"1px solid #FCD34D",textAlign:"center"}}>
+              <div style={{fontSize:20,fontWeight:700,color:"#92400E"}}>4%</div>
+              <div style={{fontSize:11,color:"#92400E"}}>반려율</div>
+            </div>
+          </div>
+        </div>}
+
+      </div>
+    </div>
+    </div>
+  </div>);
+}
+
+ReactDOM.createRoot(document.getElementById('root')).render(<App />);
+</script>
+</body>
+</html>

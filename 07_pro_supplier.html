@@ -1,0 +1,282 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>BSM - 07 공급사 성과 (PRO v3.0)</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { font-family: 'Pretendard Variable', Pretendard, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; }
+  #root { width: 100%; min-height: 100vh; }
+</style>
+</head>
+<body>
+<div id="root"></div>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.9/babel.min.js"></script>
+<script type="text/babel">
+const { useState, useRef, useEffect, useCallback, useMemo } = React;
+
+
+
+/* ═══════════════════════════════════════════════════════════════
+   AI-Embedded BSM PRO — 공급사 성과 관리
+   bsm_pro_supplier.jsx v3.0
+   ─── Canonical Alignment ───
+   Service: RLLS Functional Scope v1.0 (§3.1~3.3)
+   Risk Model: Supplier Risk Scoring Model v1.0 (6-Layer §4~10)
+   T-Series: T07 Supplier Risk + T09 Ranking + T10 Cost Anomaly + T01 Demand
+   Signal: Procurement Signal Definition v1.0 §8 (Procurement Risk Signal)
+   Tier: PRO (LITE MVP §10.4 제외 대상)
+   ═══════════════════════════════════════════════════════════════ */
+
+var C = {
+  brand:"#059669", brandLt:"#047857", white:"#FFFFFF", bg:"#F8FAFC",
+  t1:"#0F172A", t2:"#475569", t3:"#94A3B8",
+  bl:"#E2E8F0", bm:"#CBD5E1",
+  r:{sm:6,md:10,lg:14,xl:20,full:9999},
+  ok:{bg:"#F0FDF4",fg:"#166534",ac:"#22C55E",bd:"#86EFAC"},
+  warn:{bg:"#FFFBEB",fg:"#92400E",ac:"#F59E0B",bd:"#FCD34D"},
+  err:{bg:"#FEF2F2",fg:"#991B1B",ac:"#EF4444",bd:"#FCA5A5"},
+  info:{bg:"#EFF6FF",fg:"#1E40AF",ac:"#3B82F6",bd:"#93C5FD"},
+};
+
+/* ═══════════════════════════════════════════════════════════════
+   Mock — 6-Layer Risk Score (Supplier Risk Scoring Model §4)
+   financial: §4.1 Financial Stability
+   delivery:  §4.2 Delivery Reliability
+   quality:   §4.3 Quality Performance
+   compliance:§4.4 Compliance
+   costVol:   §4.5 Cost Volatility
+   dependency:§4.6 Strategic Dependency
+   ═══════════════════════════════════════════════════════════════ */
+var SUPPLIERS = [
+  {id:"SUP-001",name:"삼성SDS",cat:"IT/클라우드",grade:"A",score:92,risk:"낮음",spend:"₩3.2억",share:"17.1%",
+    sc:{financial:95,delivery:90,quality:93,compliance:94,costVol:88,dependency:82},
+    onTime:94,avgDays:12,late:2,total:34,trend:[88,89,90,91,92,92],
+    issues:[],
+    contracts:[{name:"클라우드 인프라 운영",amt:"₩1.8억/년",exp:"2025-06-30",st:"활성"},{name:"IT 유지보수",amt:"₩0.9억/년",exp:"2025-12-31",st:"활성"},{name:"보안 관제",amt:"₩0.5억/년",exp:"2026-03-31",st:"활성"}],
+    signals:[],savingsRealized:"₩4,200만 (계약 대비 실현)"},
+  {id:"SUP-002",name:"코웨이",cat:"렌탈/리스",grade:"A",score:89,risk:"낮음",spend:"₩1.8억",share:"9.6%",
+    sc:{financial:92,delivery:88,quality:90,compliance:91,costVol:85,dependency:78},
+    onTime:91,avgDays:5,late:3,total:35,trend:[85,86,87,88,89,89],
+    issues:[{date:"2025-09",type:"납기",desc:"정수기 설치 3일 지연",engine:"T07"}],
+    contracts:[{name:"정수기 렌탈",amt:"₩1.2억/년",exp:"2025-09-30",st:"갱신필요"},{name:"공기청정기 렌탈",amt:"₩0.6억/년",exp:"2026-06-30",st:"활성"}],
+    signals:[{type:"contract",msg:"정수기 계약 만료 임박 — 갱신 또는 재입찰 검토 권장",engine:"T09"}],savingsRealized:"₩960만"},
+  {id:"SUP-003",name:"ISS코리아",cat:"시설관리",grade:"B+",score:82,risk:"보통",spend:"₩1.4억",share:"7.5%",
+    sc:{financial:80,delivery:85,quality:78,compliance:84,costVol:82,dependency:70},
+    onTime:85,avgDays:0,late:0,total:12,trend:[78,79,80,81,82,82],
+    issues:[{date:"2025-07",type:"품질",desc:"3층 청소 미흡 민원 2건",engine:"T07"},{date:"2025-10",type:"인력",desc:"경비 인력 교체 시 공백 1일",engine:"T07"}],
+    contracts:[{name:"통합 시설관리",amt:"₩1.4억/년",exp:"2025-04-30",st:"갱신필요"}],
+    signals:[{type:"quality",msg:"품질 이슈 2건 — SLA 미달 가능. 성과 개선 요구 권장",engine:"T07+T09"},{type:"cost",msg:"시설관리 계약 갱신 시 시장가 3% 하락 반영 재협상 권장",engine:"T10"}],savingsRealized:"₩180만"},
+  {id:"SUP-004",name:"나스미디어",cat:"마케팅",grade:"B",score:76,risk:"보통",spend:"₩1.2억",share:"6.4%",
+    sc:{financial:78,delivery:72,quality:80,compliance:70,costVol:75,dependency:65},
+    onTime:72,avgDays:18,late:5,total:18,trend:[80,79,78,77,76,76],
+    issues:[{date:"2025-06",type:"납기",desc:"캠페인 보고서 5일 지연",engine:"T07"},{date:"2025-08",type:"품질",desc:"광고 집행 데이터 불일치",engine:"T07"},{date:"2025-11",type:"납기",desc:"월간 리포트 3일 지연",engine:"T07"}],
+    contracts:[{name:"디지털 마케팅 대행",amt:"₩1.2억/년",exp:"2025-12-31",st:"평가필요"}],
+    signals:[{type:"delivery",msg:"납기 지연 3회 연속 — 공급사 역량 재평가 권장",engine:"T07+T01"},{type:"cost",msg:"시장 평균 대비 12% 고가 — 재협상 여지",engine:"T10"},{type:"dependency",msg:"마케팅 대행사 단일 의존 — 대체 후보 확보 권장",engine:"T09"}],savingsRealized:"₩0 (미실현)"},
+  {id:"SUP-005",name:"글로벌테크",cat:"IT장비",grade:"C",score:62,risk:"높음",spend:"₩0.4억",share:"2.1%",
+    sc:{financial:65,delivery:55,quality:68,compliance:58,costVol:72,dependency:90},
+    onTime:55,avgDays:21,late:4,total:9,trend:[72,70,68,65,63,62],
+    issues:[{date:"2025-04",type:"납기",desc:"서버 장비 2주 지연",engine:"T07"},{date:"2025-07",type:"품질",desc:"장비 불량 1건 교체",engine:"T07"},{date:"2025-09",type:"납기",desc:"모니터 1주 지연",engine:"T07"},{date:"2025-11",type:"대응",desc:"A/S 미응답 3일",engine:"T07"}],
+    contracts:[],
+    signals:[{type:"delivery",msg:"납기 지연율 45% — 심각. 신규 발주 시 리스크 경고 적용",engine:"T07"},{type:"quality",msg:"불량률 11% — 업계 평균 3% 대비 높음",engine:"T07+T09"},{type:"financial",msg:"소규모 업체 — 재무 안정성 모니터링 필요",engine:"T07"},{type:"recommendation",msg:"IT장비 대체 후보 3곳 — 경쟁 입찰 전환 검토",engine:"T09"}],savingsRealized:"해당 없음"},
+];
+
+var RISK_LABELS={financial:"재무 안정",delivery:"납기 신뢰",quality:"품질 성과",compliance:"컴플라이언스",costVol:"비용 안정",dependency:"의존도"};
+var RISK_KEYS=["financial","delivery","quality","compliance","costVol","dependency"];
+
+function gradeColor(g){return(g==="A"||g==="A+")?C.ok:(g==="B+"||g==="B")?C.info:C.err;}
+
+function Detail({s}){
+  var gc=gradeColor(s.grade);
+  return(
+    <div style={{display:"flex",flexDirection:"column",gap:10}}>
+      {/* Header */}
+      <div style={{padding:14,borderRadius:C.r.md,background:gc.bg,border:"2px solid "+gc.ac}}>
+        <div style={{display:"flex",justifyContent:"space-between",alignItems:"center"}}>
+          <div>
+            <div style={{fontSize:18,fontWeight:700,color:gc.fg}}>{s.name}</div>
+            <div style={{fontSize:12,color:gc.fg,marginTop:2}}>{s.id+" · "+s.cat+" · "+s.spend+" · 점유율 "+s.share}</div>
+          </div>
+          <div style={{textAlign:"center"}}>
+            <div style={{fontSize:28,fontWeight:700,color:gc.fg}}>{s.score}</div>
+            <span style={{fontSize:10,fontWeight:600,padding:"2px 8px",borderRadius:9999,color:gc.fg,background:gc.bg,border:"1px solid "+gc.ac}}>{"등급 "+s.grade}</span>
+          </div>
+        </div>
+      </div>
+
+      {/* 6-Layer Risk + Delivery */}
+      <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:10}}>
+        <div style={{padding:12,borderRadius:C.r.md,background:C.bg,border:"1px solid "+C.bl}}>
+          <div style={{display:"flex",alignItems:"center",gap:6,marginBottom:8}}>
+            <span style={{fontSize:12,fontWeight:600,color:C.t1}}>6-Layer Risk Score</span>
+            <span style={{fontSize:10,color:C.t3}}>T07</span>
+          </div>
+          {RISK_KEYS.map(function(k){
+            var v=s.sc[k];var col=v>=80?"#22C55E":v>=60?"#F59E0B":"#EF4444";
+            return <div key={k} style={{display:"flex",alignItems:"center",gap:6,padding:"3px 0"}}>
+              <span style={{fontSize:11,color:C.t3,width:62,flexShrink:0}}>{RISK_LABELS[k]}</span>
+              <div style={{flex:1,height:6,background:C.bl,borderRadius:3}}><div style={{width:v+"%",height:6,borderRadius:3,background:col}}/></div>
+              <span style={{fontSize:11,fontWeight:600,color:C.t1,width:26,textAlign:"right"}}>{v}</span>
+            </div>;
+          })}
+        </div>
+        <div style={{padding:12,borderRadius:C.r.md,background:C.bg,border:"1px solid "+C.bl}}>
+          <div style={{fontSize:12,fontWeight:600,color:C.t1,marginBottom:8}}>납기 이행</div>
+          <div style={{display:"flex",justifyContent:"center",gap:20,marginBottom:10}}>
+            <div style={{textAlign:"center"}}>
+              <div style={{fontSize:26,fontWeight:700,color:s.onTime>=85?"#166534":s.onTime>=70?"#92400E":"#991B1B"}}>{s.onTime+"%"}</div>
+              <div style={{fontSize:10,color:C.t3}}>정시 납품률</div>
+            </div>
+            <div style={{textAlign:"center"}}>
+              <div style={{fontSize:20,fontWeight:600,color:C.t1}}>{s.avgDays+"일"}</div>
+              <div style={{fontSize:10,color:C.t3}}>평균 납기</div>
+            </div>
+          </div>
+          <div style={{fontSize:11,color:C.t2}}>{"총 "+s.total+"건 · 지연 "+s.late+"건"}</div>
+          <div style={{marginTop:10}}>
+            <div style={{fontSize:10,color:C.t3,marginBottom:4}}>6개월 추이</div>
+            <div style={{display:"flex",alignItems:"flex-end",gap:4,height:36}}>
+              {s.trend.map(function(v,i){var h=Math.max(Math.round((v-50)/50*36),4);var isLast=i===s.trend.length-1;var col=isLast?(v>=80?"#22C55E":v>=60?"#F59E0B":"#EF4444"):C.bm;return <div key={i} style={{flex:1,height:h,borderRadius:2,background:col}}/>;
+              })}
+            </div>
+          </div>
+        </div>
+      </div>
+
+      {/* §3.2.3 절감 효과 */}
+      <div style={{padding:10,borderRadius:C.r.sm,background:"#F0FDF4",border:"1px solid #86EFAC",fontSize:12,display:"flex",justifyContent:"space-between"}}>
+        <span style={{fontWeight:600,color:"#166534"}}>절감 효과 실현</span>
+        <span style={{fontWeight:700,color:"#166534"}}>{s.savingsRealized}</span>
+      </div>
+
+      {/* §3.3 학습 기반 개선 신호 */}
+      {s.signals.length>0&&<div>
+        <div style={{fontSize:12,fontWeight:600,color:"#1E40AF",marginBottom:6}}>{"AI 개선 신호 ("+s.signals.length+"건)"}</div>
+        {s.signals.map(function(sig,i){
+          var isErr=sig.type==="delivery"||sig.type==="financial";
+          var bgc=isErr?"#FEF2F2":sig.type==="recommendation"?"#F0FDF4":"#FFFBEB";
+          var bdc=isErr?"#FCA5A5":sig.type==="recommendation"?"#86EFAC":"#FCD34D";
+          var fgc=isErr?"#991B1B":sig.type==="recommendation"?"#166534":"#92400E";
+          return <div key={i} style={{display:"flex",gap:8,padding:"8px 10px",borderRadius:C.r.sm,background:bgc,border:"1px solid "+bdc,marginBottom:4,fontSize:12,alignItems:"flex-start"}}>
+            <span style={{fontSize:10,fontWeight:600,padding:"1px 6px",borderRadius:9999,color:fgc,background:bgc,border:"1px solid "+bdc,flexShrink:0}}>{sig.type}</span>
+            <span style={{color:fgc,flex:1}}>{sig.msg}</span>
+            <span style={{fontSize:9,color:C.t3,flexShrink:0}}>{sig.engine}</span>
+          </div>;
+        })}
+      </div>}
+      {s.signals.length===0&&<div style={{padding:10,borderRadius:C.r.sm,background:"#F0FDF4",border:"1px solid #86EFAC",fontSize:12,color:"#166534"}}>
+        {"AI 개선 신호 없음 — 안정적 운영"}
+      </div>}
+
+      {/* Contracts */}
+      {s.contracts.length>0&&<div>
+        <div style={{fontSize:12,fontWeight:600,color:C.t1,marginBottom:6}}>활성 계약</div>
+        {s.contracts.map(function(ct,i){var exp=ct.st!=="활성";return <div key={i} style={{display:"flex",alignItems:"center",gap:8,padding:"7px 10px",borderRadius:C.r.sm,background:exp?"#FFFBEB":"#F8FAFC",border:"1px solid "+(exp?"#FCD34D":"#E2E8F0"),marginBottom:4,fontSize:12}}>
+          <span style={{flex:1,fontWeight:500,color:C.t1}}>{ct.name}</span>
+          <span style={{color:C.t1}}>{ct.amt}</span>
+          <span style={{color:C.t3,fontSize:10}}>{ct.exp}</span>
+          <span style={{fontSize:10,fontWeight:600,padding:"2px 6px",borderRadius:9999,color:exp?"#92400E":"#166534",background:exp?"#FFFBEB":"#F0FDF4"}}>{ct.st}</span>
+        </div>;})}
+      </div>}
+
+      {/* Issues */}
+      {s.issues.length>0&&<div>
+        <div style={{fontSize:12,fontWeight:600,color:"#92400E",marginBottom:6}}>{"이슈 이력 ("+s.issues.length+"건)"}</div>
+        {s.issues.map(function(iss,i){return <div key={i} style={{display:"flex",gap:8,padding:"5px 10px",borderRadius:C.r.sm,background:"#FFFBEB",border:"1px solid #FCD34D",marginBottom:3,fontSize:12,alignItems:"center"}}>
+          <span style={{color:C.t3,flexShrink:0}}>{iss.date}</span>
+          <span style={{fontSize:10,fontWeight:600,padding:"1px 6px",borderRadius:9999,color:"#92400E",background:"#FFFBEB",border:"1px solid #F59E0B"}}>{iss.type}</span>
+          <span style={{color:"#92400E",flex:1}}>{iss.desc}</span>
+          <span style={{fontSize:9,color:C.t3}}>{iss.engine}</span>
+        </div>;})}
+      </div>}
+      {s.issues.length===0&&<div style={{padding:10,borderRadius:C.r.sm,background:"#F0FDF4",border:"1px solid #86EFAC",fontSize:12,color:"#166534"}}>{"이슈 이력 없음"}</div>}
+
+      {/* Actions */}
+      <div style={{display:"flex",gap:6,flexWrap:"wrap"}}>
+        <button style={{padding:"8px 14px",borderRadius:C.r.md,border:"1px solid "+C.bm,background:C.white,fontSize:12,color:C.t2}}>성과 리포트</button>
+        <button style={{padding:"8px 14px",borderRadius:C.r.md,border:"1px solid "+C.bm,background:C.white,fontSize:12,color:C.t2}}>재협상 요청</button>
+        {s.contracts.some(function(ct){return ct.st!=="활성";})&&<button style={{padding:"8px 14px",borderRadius:C.r.md,border:"none",background:"#F59E0B",fontSize:12,color:"#FFF",fontWeight:600}}>계약 갱신</button>}
+        {s.score<70&&<button style={{padding:"8px 14px",borderRadius:C.r.md,border:"1px solid #FCA5A5",background:"#FEF2F2",fontSize:12,color:"#991B1B",fontWeight:500}}>리스크 주의 — 대체 후보 확인</button>}
+      </div>
+
+      <div style={{padding:8,borderRadius:C.r.sm,background:"#F0F4FF",border:"1px solid #BFDBFE",fontSize:10,color:"#1E40AF",lineHeight:1.5}}>
+        <span>{"Risk Score는 거래 금지 기준이 아닌 주의 신호입니다. T07+T09 엔진이 6개 레이어를 분석합니다."}</span>
+      </div>
+    </div>
+  );
+}
+
+function App(){
+  var[sel,setSel]=useState(null);
+  return(
+  <div style={{width:"100%",height:"100%",background:"#E8ECF1",display:"flex",flexDirection:"column",fontFamily:"'Pretendard Variable',Pretendard,-apple-system,sans-serif",overflow:"hidden"}}>
+    <style>{`@import url('https://cdn.jsdelivr.net/gh/orioncactus/pretendard/dist/web/variable/pretendardvariable-dynamic-subset.css');*{box-sizing:border-box;margin:0;padding:0}::-webkit-scrollbar{width:5px}::-webkit-scrollbar-track{background:transparent}::-webkit-scrollbar-thumb{background:#E2E8F0;border-radius:3px}button{cursor:pointer;font-family:inherit;transition:all .15s}button:hover:not(:disabled){filter:brightness(1.05)}`}</style>
+
+    <div style={{height:28,background:"#2D3748",display:"flex",alignItems:"center",padding:"0 14px",gap:6,flexShrink:0}}>
+      <div style={{display:"flex",gap:4}}><div style={{width:8,height:8,borderRadius:4,background:"#FC5C65"}}/><div style={{width:8,height:8,borderRadius:4,background:"#FED330"}}/><div style={{width:8,height:8,borderRadius:4,background:"#26DE81"}}/></div>
+      <span style={{color:"#A0AEC0",fontSize:10,fontWeight:500,marginLeft:8}}>AI Embedded BSM PRO — 공급사 성과 관리 (RLLS)</span>
+    </div>
+
+    <div style={{flex:1,display:"flex",alignItems:"center",justifyContent:"center",padding:12,overflow:"hidden"}}>
+    <div style={{width:"100%",maxWidth:1060,height:"100%",maxHeight:"88%",display:"flex",flexDirection:"column",borderRadius:C.r.xl,overflow:"hidden",boxShadow:"0 24px 80px rgba(0,0,0,.35)",background:C.white}}>
+
+      <div style={{padding:"10px 20px",background:"linear-gradient(135deg,#059669,#047857)",display:"flex",alignItems:"center",justifyContent:"space-between",flexShrink:0}}>
+        <div style={{display:"flex",alignItems:"center",gap:10}}>
+          <div style={{width:32,height:32,borderRadius:8,background:"rgba(255,255,255,.15)",display:"flex",alignItems:"center",justifyContent:"center",fontSize:16}}>🏢</div>
+          <div>
+            <div style={{display:"flex",alignItems:"center",gap:8}}>
+              <span style={{fontWeight:700,fontSize:16,color:"#FFF"}}>공급사 성과 관리</span>
+              <span style={{fontSize:11,color:"rgba(255,255,255,.6)"}}>RLLS · T07+T09</span>
+            </div>
+            <div style={{fontSize:11,color:"rgba(255,255,255,.7)"}}>6-Layer Risk · 성과 추적 · 학습 신호</div>
+          </div>
+        </div>
+        <span style={{fontSize:10,fontWeight:600,padding:"3px 10px",borderRadius:9999,color:"#FFF",background:"rgba(255,255,255,.2)"}}>PRO</span>
+      </div>
+
+      <div style={{flex:1,display:"flex",overflow:"hidden",minHeight:0}}>
+        <div style={{width:300,borderRight:"1px solid "+C.bl,display:"flex",flexDirection:"column",flexShrink:0}}>
+          <div style={{padding:"10px 14px",borderBottom:"1px solid "+C.bl,fontSize:12,fontWeight:600,color:C.t1}}>{"공급사 "+SUPPLIERS.length+"곳"}</div>
+          <div style={{flex:1,overflowY:"auto"}}>
+            {SUPPLIERS.map(function(s,i){var gc=gradeColor(s.grade);var active=sel===i;return(
+              <div key={i} onClick={function(){setSel(i);}} style={{padding:"10px 14px",borderBottom:"1px solid "+C.bl,cursor:"pointer",background:active?gc.bg:C.white,borderLeft:active?"3px solid "+gc.ac:"3px solid transparent"}}>
+                <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:3}}>
+                  <span style={{fontSize:13,fontWeight:600,color:C.t1}}>{s.name}</span>
+                  <div style={{display:"flex",alignItems:"center",gap:6}}>
+                    <span style={{fontSize:10,fontWeight:600,padding:"2px 6px",borderRadius:9999,color:gc.fg,background:gc.bg}}>{s.grade}</span>
+                    <span style={{fontSize:14,fontWeight:700,color:gc.fg}}>{s.score}</span>
+                  </div>
+                </div>
+                <div style={{display:"flex",justifyContent:"space-between",fontSize:11}}>
+                  <span style={{color:C.t3}}>{s.cat}</span>
+                  <span style={{color:s.risk==="낮음"?"#166534":s.risk==="보통"?"#92400E":"#991B1B"}}>{"리스크: "+s.risk}</span>
+                </div>
+                {(s.issues.length>0||s.signals.length>0)&&<div style={{display:"flex",gap:8,marginTop:3,fontSize:10}}>
+                  {s.issues.length>0&&<span style={{color:"#92400E"}}>{"이슈 "+s.issues.length}</span>}
+                  {s.signals.length>0&&<span style={{color:"#1E40AF"}}>{"신호 "+s.signals.length}</span>}
+                </div>}
+              </div>
+            );})}
+          </div>
+        </div>
+
+        <div style={{flex:1,overflowY:"auto",padding:14}}>
+          {sel===null&&<div style={{display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",height:"100%",color:C.t3}}>
+            <span style={{fontSize:36,marginBottom:12}}>🏢</span>
+            <span style={{fontSize:14}}>왼쪽에서 공급사를 선택해 주세요</span>
+          </div>}
+          {sel!==null&&<Detail s={SUPPLIERS[sel]}/>}
+        </div>
+      </div>
+    </div>
+    </div>
+  </div>);
+}
+
+ReactDOM.createRoot(document.getElementById('root')).render(<App />);
+</script>
+</body>
+</html>

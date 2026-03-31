@@ -1,0 +1,655 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>BSM - 12 Architecture Explorer (설계문서 기반 시스템 연결도)</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { font-family: 'Pretendard Variable', Pretendard, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; }
+  #root { width: 100%; min-height: 100vh; }
+</style>
+</head>
+<body>
+<div id="root"></div>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.9/babel.min.js"></script>
+<script type="text/babel">
+const { useState, useRef, useEffect, useCallback, useMemo } = React;
+
+
+
+// ─── UX Group 13종 전체 정의 (UX_Group_Design_Specification v1.0) ───
+const UX_GROUPS = {
+  catalog:      { code:"CAT",  kr:"카탈로그 주문",     bg:"#F0FDF4", fg:"#166534", accent:"#22C55E", border:"#86EFAC", tone:"Green",   guide:"등록된 카탈로그 품목이에요. 카탈로그에서 검색 → 수량 선택 → 주문하시면 됩니다.", youDo:"카탈로그 시스템에서 직접 주문", next:"100만원 이하 자동 승인 → 배송 2~3일", action:false },
+  rental:       { code:"SUB",  kr:"렌탈/리스 신청",    bg:"#FFF7ED", fg:"#9A3412", accent:"#EA580C", border:"#FDBA74", tone:"Orange",  guide:"우리 회사에 기존 계약이 있는 렌탈/리스 품목이에요. 신청서만 작성하시면 계약 담당자가 처리합니다.", youDo:"신청서 작성 (30초)", next:"담당자 확인 → 업체에 설치 요청 → 설치 (3~5일)", action:true },
+  subscription: { code:"SUB",  kr:"구독 신청/변경",    bg:"#FDF4FF", fg:"#86198F", accent:"#C026D3", border:"#E879F9", tone:"Purple",  guide:"기존 구독 계약이 있는 서비스예요. 변경/추가 사항만 신청하시면 IT팀에서 처리합니다.", youDo:"구독 변경 신청 (30초)", next:"IT 담당자 확인 → 라이선스 처리 → 완료 (1~3일)", action:true },
+  contract:     { code:"DOC",  kr:"계약 발주 신청",    bg:"#EFF6FF", fg:"#1E3A8A", accent:"#1E40AF", border:"#93C5FD", tone:"Navy",    guide:"기존 계약이 있는 품목이에요. 계약 조건 범위 내에서 추가 발주만 하면 됩니다.", youDo:"발주 신청 (수량, 납기만)", next:"담당자 확인 → 계약 업체에 발주 → 납품", action:true },
+  general_pr:   { code:"RFQ",  kr:"구매요청서 작성",   bg:"#EFF6FF", fg:"#1E40AF", accent:"#3B82F6", border:"#93C5FD", tone:"Blue",    guide:"구매요청서(PR)를 작성해 주세요. 사양과 수량을 정리하면 부서장 승인 후 구매팀에서 진행합니다.", youDo:"구매요청서 작성 (사양, 수량, 예산, 납기)", next:"부서장 승인 → 구매팀 접수 → 업체 선정 → 납품", action:true },
+  rfq:          { code:"RFQ",  kr:"업체 비교 구매요청", bg:"#EDE9FE", fg:"#5B21B6", accent:"#7C3AED", border:"#C4B5FD", tone:"Violet",  guide:"3곳 이상 업체 비교가 필요한 구매예요. 사양을 작성해 주시면 구매팀에서 경쟁 견적을 진행합니다.", youDo:"구매요청서 작성 (사양을 상세하게)", next:"구매팀 접수 → 3곳 견적 비교 → 업체 선정 → 계약 → 납품 (2~3주)", action:true },
+  service:      { code:"SVC",  kr:"서비스 구매요청",   bg:"#ECFDF5", fg:"#065F46", accent:"#059669", border:"#6EE7B7", tone:"Emerald", guide:"용역/컨설팅 등 서비스 구매예요. 서비스 범위와 기간을 알려주시면 구매팀에서 업체를 찾아드립니다.", youDo:"서비스 요청서 작성 (범위, 기간, 예산)", next:"구매팀 접수 → 업체 탐색 → 견적 비교 → 계약 (2~4주)", action:true },
+  emergency:    { code:"URG",  kr:"긴급 구매",         bg:"#FEF2F2", fg:"#991B1B", accent:"#EF4444", border:"#FCA5A5", tone:"Red",     guide:"긴급 구매로 즉시 처리합니다. 품목과 수량만 알려주세요. 승인 절차가 간소화됩니다.", youDo:"품목, 수량만 입력 (지금 바로)", next:"즉시 승인 → 당일~1일 내 처리 → 사후 보고서 3일 내 제출", action:true },
+  strategic:    { code:"BID",  kr:"전략/자산 구매",    bg:"#EFF6FF", fg:"#1E3A8A", accent:"#1E40AF", border:"#93C5FD", tone:"Navy",    guide:"경영진 승인이 필요한 고액 구매입니다. 투자 계획서와 함께 구매요청을 올려주세요.", youDo:"구매요청서 + 투자계획서 작성", next:"부서장 → 본부장 → 경영진 승인 → 구매팀 전담 진행 (4~8주)", action:true },
+  special:      { code:"DOC",  kr:"특별 승인 구매",    bg:"#FFFBEB", fg:"#92400E", accent:"#D97706", border:"#FCD34D", tone:"Amber",   guide:"사전 승인이 필요한 특수 구매예요. 사유서를 작성해 주시면 구매팀에서 승인 절차를 안내합니다.", youDo:"사유서 + 구매요청서 작성", next:"구매팀 사전 검토 → 승인권자 결재 → 진행 (2~4주)", action:true },
+  contact_only: { code:"TEL",  kr:"계약 업체 연락처 안내", bg:"#EFF6FF", fg:"#1E3A8A", accent:"#1E40AF", border:"#93C5FD", tone:"Navy", guide:"계약된 서비스 업체가 있어요. 아래 연락처로 직접 전화하시면 됩니다.", youDo:"전화 한 통이면 끝", next:"전화 신청 → 서비스 이용 → 비용 월말 정산", action:false },
+  dept_request: { code:"DEPT", kr:"주관부서 이용신청",  bg:"#F8FAFC", fg:"#334155", accent:"#64748B", border:"#CBD5E1", tone:"Slate",   guide:"이 품목은 주관부서에서 전담합니다. BSM에서 이용 신청하시면 주관부서 담당자가 처리합니다.", youDo:"BSM 이용신청서로 이동", next:"주관부서 접수 → 검토/승인 → 계약/소싱 처리", action:true },
+};
+
+// ─── GT 35종 (GuideType Library v1.2) ───
+const GT_REGISTRY = [
+  {code:"G01",en:"Standard Catalog Purchase",kr:"카탈로그 주문",ux:"catalog",tier:"Oper",depth:"1차",route:"A",count:4},
+  {code:"G02",en:"Internal Catalog Purchase",kr:"내부 카탈로그 구매",ux:"catalog",tier:"Oper",depth:"1차",route:"A",count:0},
+  {code:"G03",en:"Contract Catalog Purchase",kr:"계약 카탈로그 구매",ux:"catalog",tier:"Oper",depth:"1차",route:"A",count:2},
+  {code:"G04",en:"Framework Catalog Purchase",kr:"장기계약 카탈로그",ux:"catalog",tier:"Oper",depth:"1차",route:"A",count:0},
+  {code:"G05",en:"VMI Catalog Purchase",kr:"공급사 관리 카탈로그",ux:"catalog",tier:"Oper",depth:"1차",route:"A",count:1},
+  {code:"G06",en:"Standard PR Purchase",kr:"일반 구매요청",ux:"general_pr",tier:"Oper",depth:"2차",route:"C",count:7},
+  {code:"G07",en:"Budget Controlled PR",kr:"예산 통제 구매",ux:"general_pr",tier:"Oper",depth:"2차",route:"C",count:0},
+  {code:"G08",en:"Department Request PR",kr:"부서 요청 구매",ux:"general_pr",tier:"Oper",depth:"2차",route:"C",count:0},
+  {code:"G09",en:"Repeat Purchase",kr:"반복 구매",ux:"catalog",tier:"Oper",depth:"1차",route:"A",count:1},
+  {code:"G10",en:"Small Purchase",kr:"소액 구매",ux:"catalog",tier:"Oper",depth:"1차",route:"A",count:0},
+  {code:"G11",en:"Standard RFQ",kr:"일반 경쟁 견적",ux:"rfq",tier:"Oper",depth:"3차",route:"D",count:24},
+  {code:"G12",en:"Limited Competition RFQ",kr:"제한 경쟁 견적",ux:"rfq",tier:"Oper",depth:"3차",route:"D",count:0},
+  {code:"G13",en:"Strategic RFQ",kr:"전략 품목 경쟁",ux:"rfq",tier:"Strat",depth:"3차",route:"D",count:9},
+  {code:"G14",en:"Reverse Auction",kr:"역경매",ux:"rfq",tier:"Strat",depth:"3차",route:"D",count:0},
+  {code:"G15",en:"Multi-stage RFQ",kr:"다단계 견적",ux:"rfq",tier:"Strat",depth:"3차",route:"D",count:0},
+  {code:"G16",en:"Existing Contract Order",kr:"기존 계약 발주",ux:"contract",tier:"Oper",depth:"1차",route:"A",count:2},
+  {code:"G17",en:"Framework Contract Order",kr:"장기 계약 발주",ux:"contract",tier:"Oper",depth:"2차",route:"B",count:1},
+  {code:"G18",en:"Service Contract Order",kr:"서비스 계약 발주",ux:"contract",tier:"Oper",depth:"2차",route:"B",count:10},
+  {code:"G19",en:"Rental/Lease",kr:"렌탈/리스 신청",ux:"rental",tier:"Oper",depth:"2차",route:"B",count:4},
+  {code:"G20",en:"Subscription",kr:"구독 신청",ux:"subscription",tier:"Oper",depth:"2차",route:"B",count:1},
+  {code:"G21",en:"General Service",kr:"일반 서비스 구매",ux:"service",tier:"Oper",depth:"2차",route:"C",count:12},
+  {code:"G22",en:"Maintenance Service",kr:"유지보수 서비스",ux:"service",tier:"Oper",depth:"2차",route:"C",count:6},
+  {code:"G23",en:"Facility Service",kr:"시설관리 서비스",ux:"service",tier:"Oper",depth:"3차",route:"D",count:6},
+  {code:"G24",en:"Professional Service",kr:"전문 서비스",ux:"service",tier:"Strat",depth:"3차",route:"D",count:19},
+  {code:"G25",en:"Project Service",kr:"프로젝트 서비스",ux:"service",tier:"Strat",depth:"3차",route:"D",count:10},
+  {code:"G26",en:"Software Purchase",kr:"소프트웨어 구매",ux:"general_pr",tier:"Oper",depth:"2차",route:"C",count:3},
+  {code:"G27",en:"SaaS Subscription",kr:"SaaS 구독",ux:"subscription",tier:"Oper",depth:"2차",route:"C",count:9},
+  {code:"G28",en:"Cloud Service",kr:"클라우드 서비스",ux:"subscription",tier:"Strat",depth:"3차",route:"D",count:6},
+  {code:"G29",en:"IT Maintenance",kr:"IT 유지보수",ux:"service",tier:"Oper",depth:"2차",route:"C",count:2},
+  {code:"G30",en:"Digital Service",kr:"디지털 서비스",ux:"service",tier:"Strat",depth:"3차",route:"D",count:1},
+  {code:"G31",en:"Emergency Purchase",kr:"긴급 구매",ux:"emergency",tier:"Except",depth:"1차",route:"A",count:0},
+  {code:"G32",en:"Sole Source",kr:"단일 공급사 구매",ux:"special",tier:"Except",depth:"2차",route:"C",count:1},
+  {code:"G33",en:"CAPEX Purchase",kr:"자산 취득 구매",ux:"strategic",tier:"Strat",depth:"3차",route:"D",count:12},
+  {code:"G34",en:"Strategic Purchase",kr:"전략 구매",ux:"strategic",tier:"Strat",depth:"3차",route:"D",count:0},
+  {code:"G35",en:"Special Approval",kr:"특별 승인 구매",ux:"special",tier:"Except",depth:"2차",route:"C",count:0},
+];
+
+// ─── BT 11종 (BuyingType Architecture Declaration v1.0) ───
+const BT_REGISTRY = [
+  {code:"BT-A",name:"카탈로그 직접발주",icon:"🛒",pr:"불가",count:3},
+  {code:"BT-B",name:"주관부서 카탈로그발주",icon:"🏢",pr:"불가",count:10},
+  {code:"BT-C",name:"주관부서 계약발주",icon:"📋",pr:"불가",count:34},
+  {code:"BT-D",name:"주관부서 경유소싱",icon:"🔍",pr:"불가",count:29},
+  {code:"BT-E",name:"일반 경쟁견적",icon:"📊",pr:"가능",count:19},
+  {code:"BT-F",name:"대형 경쟁입찰",icon:"🏗️",pr:"가능",count:8},
+  {code:"BT-G",name:"수의계약",icon:"🤝",pr:"가능",count:8},
+  {code:"BT-H",name:"장기 단가계약",icon:"📄",pr:"가능",count:30},
+  {code:"BT-I",name:"프로젝트 발주",icon:"🚀",pr:"가능",count:3},
+  {code:"BT-J",name:"구독·렌탈",icon:"🔄",pr:"조건부",count:9},
+  {code:"BT-K",name:"긴급 구매",icon:"🚨",pr:"가능",count:0},
+];
+
+// ─── 4-Route 정의 (Intake Screen Routing v1.0) ───
+const ROUTES = [
+  {id:"A",name:"1차 (대화만)",screens:"1에서 완결",time:"15~30초",turns:"1~2턴",l3:24,pct:"16%",color:"#22C55E"},
+  {id:"B",name:"2차 (계약형)",screens:"1→10→12",time:"1~3분",turns:"2~3턴",l3:34,pct:"22%",color:"#3B82F6"},
+  {id:"C",name:"2차 (보조패널)",screens:"1→10→11→12",time:"1~3분",turns:"3~5턴",l3:50,pct:"33%",color:"#7C3AED"},
+  {id:"D",name:"3차 (워크스페이스)",screens:"1→10→11→12 (A02+A03 풀)",time:"5~15분",turns:"4~7턴",l3:45,pct:"29%",color:"#EF4444"},
+];
+
+// ─── 5-State Model (Architecture Freeze v1.1) ───
+const STATES = [
+  {id:"READY",kr:"준비",color:"#94A3B8",next:["IN_PROGRESS"]},
+  {id:"IN_PROGRESS",kr:"진행 중",color:"#3B82F6",next:["HUMAN_REVIEW_REQUIRED","EXECUTION_BLOCKED","COMPLETED"]},
+  {id:"HUMAN_REVIEW_REQUIRED",kr:"검토 필요",color:"#F59E0B",next:["IN_PROGRESS","EXECUTION_BLOCKED"]},
+  {id:"EXECUTION_BLOCKED",kr:"실행 차단",color:"#EF4444",next:["IN_PROGRESS"]},
+  {id:"COMPLETED",kr:"완료",color:"#22C55E",next:[]},
+];
+
+// ─── 6-Screen Flow (Screen-API Mapping v1.1) ───
+const SCREENS = [
+  {num:1,name:"Intake Conversation",kr:"인테이크 대화",api:"POST /runtime/start-execution",state:"READY → IN_PROGRESS"},
+  {num:2,name:"GuideType Suggestion",kr:"GT 추천",api:"POST /runtime/evaluate-stability",state:"IN_PROGRESS → HRR/BLOCKED"},
+  {num:3,name:"Execution Decision Review",kr:"실행 결정 리뷰",api:"POST /runtime/confirm-execution",state:"IN_PROGRESS → COMPLETED"},
+  {num:4,name:"Human Review Action",kr:"인적 검토",api:"POST /runtime/submit-human-decision",state:"HRR → IN_PROGRESS/BLOCKED"},
+  {num:5,name:"Stop Intervention",kr:"정지 개입",api:"POST /governance/resolve-stop",state:"BLOCKED → IN_PROGRESS"},
+  {num:6,name:"Execution Result",kr:"실행 결과",api:"POST /evidence/log-execution",state:"COMPLETED 유지"},
+];
+
+// ─── Cluster 19종 (Procurement Category Library v2.0) ───
+const CLUSTERS = [
+  {id:"capex",name:"자산/설비",gt:"G33",count:30},
+  {id:"logistics",name:"물류",gt:"G18,G21",count:26},
+  {id:"marketing",name:"마케팅",gt:"G21,G13",count:21},
+  {id:"rnd",name:"연구개발",gt:"G24,G25",count:13},
+  {id:"service",name:"일반 서비스",gt:"G21~G22",count:12},
+  {id:"insurance",name:"보험",gt:"G13,G18",count:9},
+  {id:"professional",name:"전문 서비스",gt:"G24",count:8},
+  {id:"contact",name:"연락처 안내",gt:"CONTACT",count:7},
+  {id:"subscription",name:"구독",gt:"G20,G27",count:6},
+  {id:"facility",name:"시설관리",gt:"G23",count:5},
+  {id:"maintenance",name:"유지보수",gt:"G22,G29",count:3},
+  {id:"rental",name:"렌탈/리스",gt:"G19",count:3},
+  {id:"software",name:"소프트웨어",gt:"G26",count:3},
+  {id:"it_infra",name:"IT 인프라",gt:"G29",count:3},
+  {id:"cloud",name:"클라우드",gt:"G28",count:2},
+  {id:"catalog",name:"카탈로그",gt:"G01~G05",count:1},
+];
+
+// ─── 3-Layer Architecture (Layer Architecture Canonical Mapping v1.0) ───
+const LAYERS_3 = [
+  {name:"Interaction Layer",logical:["Intake Interaction Layer"],color:"#3B82F6",desc:"사용자 인터페이스 및 인테이크 대화"},
+  {name:"Decision Orchestration Layer",logical:["Navigation Decision Layer","Governance Stabilization Layer"],color:"#7C3AED",desc:"Navigation 결정 + Governance 안정화"},
+  {name:"Execution Integration Layer",logical:["Runtime Execution Layer","Business Service Layer"],color:"#059669",desc:"T-Series 런타임 + 외부 연동 + 데이터"},
+];
+
+// ─── 5대 서비스 (AIEmbedded_BSM_Service_Layer v1.0) ───
+const SERVICES_5 = [
+  {code:"SISE",name:"Signal Intelligence & Supplier Evaluation",kr:"신호 기반 분석 지원",color:"#3B82F6"},
+  {code:"SCRL",name:"Spend Control & Risk Lens",kr:"비용 중심 의사결정 지원",color:"#22C55E"},
+  {code:"BJSA",name:"Buying Journey Structuring & Automation",kr:"구매 실행 흐름 구성",color:"#7C3AED"},
+  {code:"CEO",name:"Compliance & Ethics Oversight",kr:"플랫폼 거버넌스 통제",color:"#EF4444"},
+  {code:"RLLS",name:"Retrospective Learning & Lifecycle Service",kr:"사후 학습 및 성과 관리",color:"#F59E0B"},
+];
+
+// ─── Navigation Pipeline (Decision Rule v3.0 §3) ───
+const NAV_PIPELINE = [
+  {step:1,name:"Category First",desc:"L3 품목 매칭 (153건 CANON + LLM Fallback)",engine:"T01"},
+  {step:2,name:"BT Resolution",desc:"BT 11종 확정 (prAllowed 결정)",engine:"T02"},
+  {step:3,name:"Condition Check",desc:"7종 조건 변수 평가 (긴급/금액/수량/수의/재주문/CAPEX/특별승인)",engine:"T03"},
+  {step:4,name:"GT Decision",desc:"G01~G35 중 최종 GT 확정 + Confidence 계산",engine:"T03"},
+  {step:5,name:"UX Group Resolve",desc:"13종 UX Group 매핑 + BT Override 적용",engine:"—"},
+  {step:6,name:"Route Assign",desc:"4-Route 자동 배정 (A/B/C/D)",engine:"—"},
+];
+
+// ──────────────────────────── COMPONENTS ────────────────────────────
+
+const Badge = ({children, color="#64748B", bg}) => (
+  <span style={{display:"inline-flex",alignItems:"center",padding:"2px 8px",borderRadius:9999,fontSize:11,fontWeight:600,color:color,background:bg||`${color}18`,letterSpacing:"0.02em",whiteSpace:"nowrap"}}>{children}</span>
+);
+
+const Card = ({children, onClick, active, style={}}) => (
+  <div onClick={onClick} style={{background:"var(--card-bg)",border:`1.5px solid ${active?"var(--accent)":"var(--border)"}`,borderRadius:12,padding:16,cursor:onClick?"pointer":"default",transition:"all 0.2s",boxShadow:active?"0 0 0 3px var(--accent-glow)":"0 1px 3px rgba(0,0,0,0.06)",...style}}>{children}</div>
+);
+
+const SectionTitle = ({children, sub}) => (
+  <div style={{marginBottom:16}}>
+    <h2 style={{fontSize:18,fontWeight:700,color:"var(--text)",margin:0,letterSpacing:"-0.02em"}}>{children}</h2>
+    {sub && <p style={{fontSize:12,color:"var(--text-muted)",margin:"4px 0 0",lineHeight:1.5}}>{sub}</p>}
+  </div>
+);
+
+const TabButton = ({active,children,onClick,count}) => (
+  <button onClick={onClick} style={{padding:"8px 16px",borderRadius:8,border:"none",background:active?"var(--accent)":"transparent",color:active?"#fff":"var(--text-muted)",fontSize:13,fontWeight:active?600:500,cursor:"pointer",transition:"all 0.15s",display:"flex",alignItems:"center",gap:6}}>
+    {children}
+    {count!=null && <span style={{fontSize:10,opacity:0.7,background:active?"rgba(255,255,255,0.2)":"var(--border)",padding:"1px 6px",borderRadius:99}}>{count}</span>}
+  </button>
+);
+
+// ─── Main App ───
+function BSMExplorer() {
+  const [tab, setTab] = useState("overview");
+  const [selectedGT, setSelectedGT] = useState(null);
+  const [selectedUX, setSelectedUX] = useState(null);
+  const [selectedRoute, setSelectedRoute] = useState(null);
+  const [searchText, setSearchText] = useState("");
+  const [dark, setDark] = useState(true);
+
+  const cssVars = dark ? {
+    "--bg":"#0F1117","--card-bg":"#1A1D27","--border":"#2A2D3A","--text":"#E8E9ED","--text-muted":"#8B8FA3","--accent":"#6366F1","--accent-glow":"rgba(99,102,241,0.15)","--surface":"#22252F"
+  } : {
+    "--bg":"#F8F9FC","--card-bg":"#FFFFFF","--border":"#E2E4EA","--text":"#1A1D2B","--text-muted":"#6B7085","--accent":"#4F46E5","--accent-glow":"rgba(79,70,229,0.1)","--surface":"#F1F2F6"
+  };
+
+  const filteredGT = useMemo(() => {
+    if (!searchText) return GT_REGISTRY;
+    const q = searchText.toLowerCase();
+    return GT_REGISTRY.filter(g =>
+      g.code.toLowerCase().includes(q) || g.kr.includes(q) || g.en.toLowerCase().includes(q) || g.ux.includes(q)
+    );
+  }, [searchText]);
+
+  const gtByRoute = useMemo(() => {
+    const m = {A:[],B:[],C:[],D:[]};
+    GT_REGISTRY.forEach(g => m[g.route]?.push(g));
+    return m;
+  }, []);
+
+  const gtByUX = useMemo(() => {
+    const m = {};
+    GT_REGISTRY.forEach(g => { if(!m[g.ux]) m[g.ux]=[]; m[g.ux].push(g); });
+    return m;
+  }, []);
+
+  return (
+    <div style={{...cssVars, background:"var(--bg)", color:"var(--text)", minHeight:"100vh", fontFamily:"'Pretendard','Inter',system-ui,sans-serif",fontSize:13,lineHeight:1.6}}>
+      {/* Header */}
+      <div style={{borderBottom:"1px solid var(--border)",background:"var(--card-bg)",padding:"12px 20px",display:"flex",alignItems:"center",justifyContent:"space-between",position:"sticky",top:0,zIndex:100,backdropFilter:"blur(12px)"}}>
+        <div style={{display:"flex",alignItems:"center",gap:12}}>
+          <div style={{width:32,height:32,borderRadius:8,background:"linear-gradient(135deg,#6366F1,#8B5CF6)",display:"flex",alignItems:"center",justifyContent:"center",fontSize:16,fontWeight:800,color:"#fff"}}>B</div>
+          <div>
+            <div style={{fontSize:14,fontWeight:700,letterSpacing:"-0.02em"}}>AI-Embedded BSM</div>
+            <div style={{fontSize:10,color:"var(--text-muted)"}}>Architecture Explorer v3.0 — 설계문서 기반 시스템 연결도</div>
+          </div>
+        </div>
+        <button onClick={()=>setDark(!dark)} style={{width:32,height:32,borderRadius:8,border:"1px solid var(--border)",background:"var(--surface)",cursor:"pointer",fontSize:14,display:"flex",alignItems:"center",justifyContent:"center",color:"var(--text)"}}>
+          {dark?"☀":"☾"}
+        </button>
+      </div>
+
+      {/* Tab Navigation */}
+      <div style={{borderBottom:"1px solid var(--border)",padding:"4px 16px",display:"flex",gap:2,overflowX:"auto",background:"var(--card-bg)"}}>
+        {[
+          {id:"overview",label:"아키텍처 총괄",icon:"◆"},
+          {id:"navigation",label:"Navigation Pipeline",icon:"▶"},
+          {id:"guidetype",label:"GuideType 35종",icon:"◎",count:35},
+          {id:"uxgroup",label:"UX Group 13종",icon:"●",count:13},
+          {id:"routes",label:"4-Route 흐름",icon:"↗",count:4},
+          {id:"state",label:"5-State 모델",icon:"⬡",count:5},
+          {id:"bt",label:"BuyingType 11종",icon:"□",count:11},
+        ].map(t => (
+          <TabButton key={t.id} active={tab===t.id} onClick={()=>setTab(t.id)} count={t.count}>
+            <span style={{fontSize:11}}>{t.icon}</span> {t.label}
+          </TabButton>
+        ))}
+      </div>
+
+      {/* Content */}
+      <div style={{padding:20,maxWidth:1200,margin:"0 auto"}}>
+
+        {/* ─── TAB: Overview ─── */}
+        {tab === "overview" && (
+          <div style={{display:"flex",flexDirection:"column",gap:20}}>
+            <SectionTitle sub="Master Architecture Declaration v2.1 | AI-Embedded BSM은 구매 의사결정 운영체계(Procurement Operating System)로 정의한다">아키텍처 총괄도</SectionTitle>
+
+            {/* 4-Step Platform Flow */}
+            <div style={{display:"grid",gridTemplateColumns:"repeat(4,1fr)",gap:12}}>
+              {[
+                {n:1,title:"Intake Understanding",kr:"인테이크 이해",icon:"💬",color:"#3B82F6"},
+                {n:2,title:"Navigation Structuring",kr:"네비게이션 구조화",icon:"🧭",color:"#7C3AED"},
+                {n:3,title:"Governance Stabilization",kr:"거버넌스 안정화",icon:"🛡️",color:"#F59E0B"},
+                {n:4,title:"Conditional Execution",kr:"조건부 실행",icon:"⚡",color:"#22C55E"},
+              ].map((s,i) => (
+                <Card key={s.n} style={{textAlign:"center",position:"relative"}}>
+                  <div style={{fontSize:24,marginBottom:6}}>{s.icon}</div>
+                  <div style={{fontSize:10,color:s.color,fontWeight:700}}>STEP {s.n}</div>
+                  <div style={{fontSize:13,fontWeight:600,marginTop:2}}>{s.kr}</div>
+                  <div style={{fontSize:10,color:"var(--text-muted)",marginTop:2}}>{s.title}</div>
+                  {i < 3 && <div style={{position:"absolute",right:-8,top:"50%",transform:"translateY(-50%)",color:"var(--text-muted)",fontSize:14,zIndex:1}}>→</div>}
+                </Card>
+              ))}
+            </div>
+
+            {/* 3-Layer Architecture */}
+            <Card>
+              <div style={{fontSize:13,fontWeight:700,marginBottom:12}}>System 3-Layer Architecture</div>
+              <div style={{display:"flex",flexDirection:"column",gap:8}}>
+                {LAYERS_3.map(l => (
+                  <div key={l.name} style={{display:"flex",alignItems:"center",gap:12,padding:"10px 14px",borderRadius:8,background:`${l.color}10`,border:`1px solid ${l.color}30`}}>
+                    <div style={{width:4,height:36,borderRadius:2,background:l.color}} />
+                    <div style={{flex:1}}>
+                      <div style={{fontSize:12,fontWeight:700,color:l.color}}>{l.name}</div>
+                      <div style={{fontSize:11,color:"var(--text-muted)",marginTop:2}}>
+                        Logical: {l.logical.join(" + ")} — {l.desc}
+                      </div>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </Card>
+
+            {/* 5대 서비스 */}
+            <Card>
+              <div style={{fontSize:13,fontWeight:700,marginBottom:12}}>5대 Platform Service</div>
+              <div style={{display:"grid",gridTemplateColumns:"repeat(5,1fr)",gap:8}}>
+                {SERVICES_5.map(s => (
+                  <div key={s.code} style={{textAlign:"center",padding:10,borderRadius:8,background:`${s.color}10`,border:`1px solid ${s.color}30`}}>
+                    <div style={{fontSize:12,fontWeight:800,color:s.color}}>{s.code}</div>
+                    <div style={{fontSize:10,color:"var(--text-muted)",marginTop:4}}>{s.kr}</div>
+                  </div>
+                ))}
+              </div>
+            </Card>
+
+            {/* Key Numbers */}
+            <div style={{display:"grid",gridTemplateColumns:"repeat(6,1fr)",gap:8}}>
+              {[
+                {n:"153",label:"L3 품목",color:"#3B82F6"},
+                {n:"35",label:"GuideType",color:"#7C3AED"},
+                {n:"11",label:"BuyingType",color:"#059669"},
+                {n:"13",label:"UX Group",color:"#F59E0B"},
+                {n:"19",label:"Cluster",color:"#EC4899"},
+                {n:"5",label:"Runtime State",color:"#EF4444"},
+              ].map(k => (
+                <Card key={k.label} style={{textAlign:"center",padding:12}}>
+                  <div style={{fontSize:22,fontWeight:800,color:k.color,letterSpacing:"-0.03em"}}>{k.n}</div>
+                  <div style={{fontSize:10,color:"var(--text-muted)",marginTop:2}}>{k.label}</div>
+                </Card>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {/* ─── TAB: Navigation Pipeline ─── */}
+        {tab === "navigation" && (
+          <div style={{display:"flex",flexDirection:"column",gap:16}}>
+            <SectionTitle sub="GuideType Decision Rule Standard v3.0 §3 — Category First, Intent Last · Navigation Engine Implementation v1.1">Navigation Decision Pipeline</SectionTitle>
+            
+            <div style={{display:"flex",flexDirection:"column",gap:8}}>
+              {NAV_PIPELINE.map((p,i) => (
+                <div key={p.step} style={{display:"flex",alignItems:"center",gap:12}}>
+                  <div style={{width:36,height:36,borderRadius:"50%",background:"var(--accent)",color:"#fff",display:"flex",alignItems:"center",justifyContent:"center",fontSize:14,fontWeight:700,flexShrink:0}}>{p.step}</div>
+                  <Card style={{flex:1,padding:12}}>
+                    <div style={{display:"flex",justifyContent:"space-between",alignItems:"center"}}>
+                      <div>
+                        <div style={{fontSize:13,fontWeight:700}}>{p.name}</div>
+                        <div style={{fontSize:11,color:"var(--text-muted)",marginTop:2}}>{p.desc}</div>
+                      </div>
+                      {p.engine !== "—" && <Badge color="#3B82F6">{p.engine}</Badge>}
+                    </div>
+                  </Card>
+                  {i < NAV_PIPELINE.length-1 && <div style={{position:"absolute",left:34,fontSize:10,color:"var(--text-muted)"}}>↓</div>}
+                </div>
+              ))}
+            </div>
+
+            {/* Confidence Model */}
+            <Card>
+              <div style={{fontSize:13,fontWeight:700,marginBottom:10}}>Confidence 모델 (Decision Rule v3.0 §6)</div>
+              <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:12}}>
+                <div style={{padding:10,borderRadius:8,background:"#22C55E10",border:"1px solid #22C55E30"}}>
+                  <div style={{fontSize:12,fontWeight:700,color:"#22C55E"}}>CANON Fast Path</div>
+                  <div style={{fontSize:11,color:"var(--text-muted)",marginTop:4}}>L3_GT_CANON 153건 등록 품목</div>
+                  <div style={{fontSize:18,fontWeight:800,color:"#22C55E",marginTop:4}}>0.85 시작</div>
+                  <div style={{fontSize:10,color:"var(--text-muted)"}}>계약 존재 +0.10 / 긴급·수의·특별 +0.05</div>
+                </div>
+                <div style={{padding:10,borderRadius:8,background:"#F59E0B10",border:"1px solid #F59E0B30"}}>
+                  <div style={{fontSize:12,fontWeight:700,color:"#F59E0B"}}>Decision Tree Path</div>
+                  <div style={{fontSize:11,color:"var(--text-muted)",marginTop:4}}>CANON 미등록 품목 (LLM Fallback)</div>
+                  <div style={{fontSize:18,fontWeight:800,color:"#F59E0B",marginTop:4}}>0.50 시작</div>
+                  <div style={{fontSize:10,color:"var(--text-muted)"}}>다단계 질문으로 Confidence 상승</div>
+                </div>
+              </div>
+              <div style={{marginTop:10,padding:10,borderRadius:8,background:"#EF444410",border:"1px solid #EF444430"}}>
+                <div style={{fontSize:12,fontWeight:700,color:"#EF4444"}}>SW17 Confidence Cap Rule</div>
+                <div style={{fontSize:11,color:"var(--text-muted)",marginTop:4}}>
+                  금액 미입력 + 금액 의존 GT (G06,G07,G08,G10,G11,G12,G13,G26,G33,G34) → Confidence ≤ 0.55 강제 캡
+                </div>
+              </div>
+              <div style={{marginTop:10,display:"flex",gap:8}}>
+                <Badge color="#22C55E">80%↑ 자동확정</Badge>
+                <Badge color="#F59E0B">60~80% 사용자확인</Badge>
+                <Badge color="#EF4444">60%↓ 다단계질문</Badge>
+              </div>
+            </Card>
+
+            {/* Cluster → GT */}
+            <Card>
+              <div style={{fontSize:13,fontWeight:700,marginBottom:10}}>Cluster 19종 → 기본 GT 매핑</div>
+              <div style={{display:"grid",gridTemplateColumns:"repeat(4,1fr)",gap:6}}>
+                {CLUSTERS.map(c => (
+                  <div key={c.id} style={{padding:8,borderRadius:6,background:"var(--surface)",fontSize:11}}>
+                    <div style={{fontWeight:700}}>{c.name}</div>
+                    <div style={{color:"var(--text-muted)",marginTop:2}}>{c.id} → {c.gt}</div>
+                    <div style={{color:"var(--accent)",fontSize:10}}>{c.count}건</div>
+                  </div>
+                ))}
+              </div>
+            </Card>
+          </div>
+        )}
+
+        {/* ─── TAB: GuideType 35종 ─── */}
+        {tab === "guidetype" && (
+          <div style={{display:"flex",flexDirection:"column",gap:16}}>
+            <SectionTitle sub="GuideType Library v1.2 — G01~G35 전체 활성 (LITE/PRO/ENT 공통)">GuideType 35종 레지스트리</SectionTitle>
+            
+            <input value={searchText} onChange={e=>setSearchText(e.target.value)} placeholder="GT 코드, 이름, UX Group으로 검색..." style={{padding:"10px 14px",borderRadius:8,border:"1px solid var(--border)",background:"var(--surface)",color:"var(--text)",fontSize:13,outline:"none",width:"100%",boxSizing:"border-box"}} />
+
+            <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fill,minmax(260,1fr))",gap:8}}>
+              {filteredGT.map(g => {
+                const ux = UX_GROUPS[g.ux] || UX_GROUPS.catalog;
+                const active = selectedGT === g.code;
+                return (
+                  <Card key={g.code} active={active} onClick={()=>setSelectedGT(active?null:g.code)} style={{padding:12}}>
+                    <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start"}}>
+                      <div>
+                        <span style={{fontSize:14,fontWeight:800,color:ux.accent}}>{g.code}</span>
+                        <span style={{fontSize:12,fontWeight:600,marginLeft:8}}>{g.kr}</span>
+                      </div>
+                      <Badge color={g.route==="A"?"#22C55E":g.route==="B"?"#3B82F6":g.route==="C"?"#7C3AED":"#EF4444"}>
+                        Route {g.route}
+                      </Badge>
+                    </div>
+                    <div style={{fontSize:10,color:"var(--text-muted)",marginTop:4}}>{g.en}</div>
+                    <div style={{display:"flex",gap:4,marginTop:6,flexWrap:"wrap"}}>
+                      <Badge color={ux.accent} bg={ux.bg}>{ux.kr}</Badge>
+                      <Badge>{g.depth}</Badge>
+                      <Badge color={g.tier==="Oper"?"#64748B":g.tier==="Strat"?"#7C3AED":"#EF4444"}>{g.tier}</Badge>
+                      {g.count > 0 && <Badge color="#059669">{g.count}건</Badge>}
+                    </div>
+                    {active && (
+                      <div style={{marginTop:10,padding:10,borderRadius:8,background:ux.bg,border:`1px solid ${ux.border}`}}>
+                        <div style={{fontSize:12,fontWeight:600,color:ux.fg,marginBottom:4}}>💬 {ux.guide}</div>
+                        <div style={{fontSize:11,color:ux.fg,opacity:0.8}}>✅ You Do: {ux.youDo}</div>
+                        <div style={{fontSize:11,color:ux.fg,opacity:0.8,marginTop:2}}>→ Next: {ux.next}</div>
+                      </div>
+                    )}
+                  </Card>
+                );
+              })}
+            </div>
+          </div>
+        )}
+
+        {/* ─── TAB: UX Group 13종 ─── */}
+        {tab === "uxgroup" && (
+          <div style={{display:"flex",flexDirection:"column",gap:16}}>
+            <SectionTitle sub="UX Group Design Specification v1.0 — 사용자가 체감하는 최종 출력 단위 (GT 코드 완전 비노출)">UX Group 13종</SectionTitle>
+            
+            <div style={{padding:12,borderRadius:8,background:"var(--surface)",border:"1px solid var(--border)",fontSize:12}}>
+              <span style={{fontWeight:700}}>설계 원칙:</span> 사용자 체감 흐름 5가지 — ① 바로 주문 ② 요청서 작성 안내 ③ 업체 비교 필요 안내 ④ 계약 업체 연락 ⑤ 구매팀 상담 연결
+            </div>
+
+            <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fill,minmax(340,1fr))",gap:10}}>
+              {Object.entries(UX_GROUPS).map(([key,ux]) => {
+                const gts = gtByUX[key] || [];
+                const active = selectedUX === key;
+                return (
+                  <Card key={key} active={active} onClick={()=>setSelectedUX(active?null:key)} style={{padding:0,overflow:"hidden"}}>
+                    <div style={{background:ux.bg,padding:"12px 14px",borderBottom:`2px solid ${ux.border}`}}>
+                      <div style={{display:"flex",justifyContent:"space-between",alignItems:"center"}}>
+                        <div>
+                          <span style={{fontSize:10,fontWeight:800,color:ux.accent,letterSpacing:"0.05em"}}>[{ux.code}]</span>
+                          <span style={{fontSize:14,fontWeight:700,color:ux.fg,marginLeft:6}}>{ux.kr}</span>
+                        </div>
+                        <div style={{width:10,height:10,borderRadius:"50%",background:ux.accent}} />
+                      </div>
+                      <div style={{fontSize:11,color:ux.fg,opacity:0.85,marginTop:6,lineHeight:1.5}}>{ux.guide}</div>
+                    </div>
+                    <div style={{padding:"10px 14px"}}>
+                      <div style={{display:"flex",gap:4,flexWrap:"wrap",marginBottom:6}}>
+                        {gts.map(g => <Badge key={g.code} color={ux.accent} bg={`${ux.accent}15`}>{g.code}</Badge>)}
+                        {key === "dept_request" && <Badge color="#64748B">BT Override</Badge>}
+                        {key === "contact_only" && <Badge color="#64748B">cluster=contact</Badge>}
+                      </div>
+                      <div style={{fontSize:10,color:"var(--text-muted)"}}>
+                        ✅ {ux.youDo} → {ux.next}
+                      </div>
+                      {ux.action && <Badge color="#059669">bsmAction: true</Badge>}
+                      {!ux.action && <Badge color="#94A3B8">화면 완결 (Action 없음)</Badge>}
+                    </div>
+                  </Card>
+                );
+              })}
+            </div>
+          </div>
+        )}
+
+        {/* ─── TAB: 4-Route 흐름 ─── */}
+        {tab === "routes" && (
+          <div style={{display:"flex",flexDirection:"column",gap:16}}>
+            <SectionTitle sub="Intake Screen Routing Specification v1.0 — GT 확정 시 자동 배정 (사용자 선택 아님)">4-Route × 4-Screen 인테이크 흐름</SectionTitle>
+
+            {/* Route Overview */}
+            <div style={{display:"grid",gridTemplateColumns:"repeat(4,1fr)",gap:10}}>
+              {ROUTES.map(r => {
+                const active = selectedRoute === r.id;
+                return (
+                  <Card key={r.id} active={active} onClick={()=>setSelectedRoute(active?null:r.id)} style={{borderTop:`3px solid ${r.color}`}}>
+                    <div style={{fontSize:20,fontWeight:800,color:r.color}}>Route {r.id}</div>
+                    <div style={{fontSize:12,fontWeight:600,marginTop:2}}>{r.name}</div>
+                    <div style={{fontSize:11,color:"var(--text-muted)",marginTop:6}}>화면: {r.screens}</div>
+                    <div style={{fontSize:11,color:"var(--text-muted)"}}>시간: {r.time} · {r.turns}</div>
+                    <div style={{marginTop:6,display:"flex",justifyContent:"space-between"}}>
+                      <Badge color={r.color}>{r.l3}건 ({r.pct})</Badge>
+                    </div>
+                  </Card>
+                );
+              })}
+            </div>
+
+            {/* Screen Flow */}
+            <Card>
+              <div style={{fontSize:13,fontWeight:700,marginBottom:10}}>Intake 4-Screen 구조</div>
+              <div style={{display:"grid",gridTemplateColumns:"repeat(4,1fr)",gap:8}}>
+                {[
+                  {num:"1",name:"Explore",kr:"구매 알아보기",engine:"A01+T01/T02",state:"READY→IN_PROGRESS",color:"#3B82F6"},
+                  {num:"10",name:"Requirement",kr:"요건 구조화",engine:"A02+T03/T06",state:"IN_PROGRESS 유지",color:"#7C3AED"},
+                  {num:"11",name:"Condition",kr:"조건/정책 점검",engine:"T03+T05",state:"→HRR 가능",color:"#F59E0B"},
+                  {num:"12",name:"Validation",kr:"실행 전 검증",engine:"T03/T05/T06",state:"→COMPLETED",color:"#22C55E"},
+                ].map((s,i) => (
+                  <div key={s.num} style={{padding:12,borderRadius:8,background:`${s.color}10`,border:`1px solid ${s.color}30`,textAlign:"center",position:"relative"}}>
+                    <div style={{fontSize:18,fontWeight:800,color:s.color}}>#{s.num}</div>
+                    <div style={{fontSize:12,fontWeight:700,marginTop:2}}>{s.kr}</div>
+                    <div style={{fontSize:10,color:"var(--text-muted)",marginTop:2}}>{s.name}</div>
+                    <div style={{fontSize:9,color:s.color,marginTop:4}}>{s.engine}</div>
+                    <div style={{fontSize:9,color:"var(--text-muted)",marginTop:2}}>{s.state}</div>
+                    {i < 3 && <div style={{position:"absolute",right:-6,top:"50%",transform:"translateY(-50%)",fontSize:12,color:"var(--text-muted)"}}>→</div>}
+                  </div>
+                ))}
+              </div>
+            </Card>
+
+            {/* GT by Route */}
+            {selectedRoute && (
+              <Card>
+                <div style={{fontSize:13,fontWeight:700,marginBottom:10}}>Route {selectedRoute} — 해당 GT 목록</div>
+                <div style={{display:"flex",gap:6,flexWrap:"wrap"}}>
+                  {gtByRoute[selectedRoute].map(g => {
+                    const ux = UX_GROUPS[g.ux];
+                    return <Badge key={g.code} color={ux?.accent||"#64748B"} bg={ux?.bg}>{g.code} {g.kr}</Badge>;
+                  })}
+                </div>
+              </Card>
+            )}
+          </div>
+        )}
+
+        {/* ─── TAB: 5-State 모델 ─── */}
+        {tab === "state" && (
+          <div style={{display:"flex",flexDirection:"column",gap:16}}>
+            <SectionTitle sub="Architecture Freeze Declaration v1.1 — Runtime State Model 확정본">5-State Runtime 모델 + 6-Screen 매핑</SectionTitle>
+
+            {/* State Machine */}
+            <Card>
+              <div style={{fontSize:13,fontWeight:700,marginBottom:12}}>5-State Transition Diagram</div>
+              <div style={{display:"flex",alignItems:"center",gap:10,flexWrap:"wrap",justifyContent:"center"}}>
+                {STATES.map((s,i) => (
+                  <div key={s.id} style={{display:"flex",alignItems:"center",gap:10}}>
+                    <div style={{padding:"10px 16px",borderRadius:10,background:`${s.color}15`,border:`2px solid ${s.color}`,textAlign:"center",minWidth:100}}>
+                      <div style={{fontSize:12,fontWeight:800,color:s.color}}>{s.kr}</div>
+                      <div style={{fontSize:9,color:"var(--text-muted)",marginTop:2}}>{s.id}</div>
+                    </div>
+                    {i < STATES.length - 1 && <div style={{color:"var(--text-muted)",fontSize:16}}>→</div>}
+                  </div>
+                ))}
+              </div>
+              <div style={{marginTop:12,padding:10,borderRadius:8,background:"#EF444410",border:"1px solid #EF444430",fontSize:11}}>
+                <strong>Freeze 규칙:</strong> BLOCKED → 자동 Stop Intervention 이동 (Override 불가) · HRR → 자동 Human Review 이동 (Override 불가) · COMPLETED → 반드시 Result 표시 (Override 불가)
+              </div>
+            </Card>
+
+            {/* 6-Screen */}
+            <Card>
+              <div style={{fontSize:13,fontWeight:700,marginBottom:10}}>6-Screen Execution Flow (Screen-API Mapping v1.1)</div>
+              <div style={{display:"flex",flexDirection:"column",gap:6}}>
+                {SCREENS.map(s => (
+                  <div key={s.num} style={{display:"flex",alignItems:"center",gap:10,padding:"8px 12px",borderRadius:8,background:"var(--surface)"}}>
+                    <div style={{width:28,height:28,borderRadius:"50%",background:"var(--accent)",color:"#fff",display:"flex",alignItems:"center",justifyContent:"center",fontSize:12,fontWeight:700,flexShrink:0}}>{s.num}</div>
+                    <div style={{flex:1}}>
+                      <div style={{display:"flex",alignItems:"center",gap:8}}>
+                        <span style={{fontSize:12,fontWeight:700}}>{s.kr}</span>
+                        <span style={{fontSize:10,color:"var(--text-muted)"}}>{s.name}</span>
+                      </div>
+                      <div style={{fontSize:10,color:"var(--text-muted)",marginTop:2,fontFamily:"monospace"}}>{s.api}</div>
+                    </div>
+                    <Badge>{s.state}</Badge>
+                  </div>
+                ))}
+              </div>
+            </Card>
+          </div>
+        )}
+
+        {/* ─── TAB: BuyingType 11종 ─── */}
+        {tab === "bt" && (
+          <div style={{display:"flex",flexDirection:"column",gap:16}}>
+            <SectionTitle sub="BuyingType Architecture Declaration v1.0 — L3→BT 매핑은 BT Override의 기반">BuyingType 11종 레지스트리</SectionTitle>
+
+            <div style={{padding:12,borderRadius:8,background:"#EF444410",border:"1px solid #EF444430",fontSize:12}}>
+              <strong>BT Override 원칙:</strong> prAllowed=false & BT≠BT-A → UX Group 강제 'dept_request' 전환. 이것이 13번째 UX Group(주관부서 이용신청)의 존재 이유.
+            </div>
+
+            <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fill,minmax(280,1fr))",gap:8}}>
+              {BT_REGISTRY.map(b => (
+                <Card key={b.code}>
+                  <div style={{display:"flex",alignItems:"center",gap:10}}>
+                    <div style={{fontSize:24}}>{b.icon}</div>
+                    <div style={{flex:1}}>
+                      <div style={{fontSize:13,fontWeight:700}}>{b.code}</div>
+                      <div style={{fontSize:12,color:"var(--text-muted)"}}>{b.name}</div>
+                    </div>
+                    <div style={{display:"flex",flexDirection:"column",alignItems:"flex-end",gap:4}}>
+                      <Badge color={b.pr==="가능"?"#22C55E":b.pr==="불가"?"#EF4444":"#F59E0B"}>PR {b.pr}</Badge>
+                      <Badge>{b.count}건</Badge>
+                    </div>
+                  </div>
+                </Card>
+              ))}
+            </div>
+
+            {/* PR 분포 */}
+            <Card>
+              <div style={{fontSize:13,fontWeight:700,marginBottom:10}}>PR 권한 분포</div>
+              <div style={{display:"flex",gap:12}}>
+                {[
+                  {label:"PR 불가",count:BT_REGISTRY.filter(b=>b.pr==="불가").reduce((s,b)=>s+b.count,0),color:"#EF4444",desc:"dept_request 강제 전환"},
+                  {label:"PR 가능",count:BT_REGISTRY.filter(b=>b.pr==="가능").reduce((s,b)=>s+b.count,0),color:"#22C55E",desc:"GT의 원래 uxGroup 유지"},
+                  {label:"조건부",count:BT_REGISTRY.filter(b=>b.pr==="조건부").reduce((s,b)=>s+b.count,0),color:"#F59E0B",desc:"기존계약 여부에 따라 분기"},
+                ].map(p => (
+                  <div key={p.label} style={{flex:1,padding:10,borderRadius:8,background:`${p.color}10`,border:`1px solid ${p.color}30`,textAlign:"center"}}>
+                    <div style={{fontSize:22,fontWeight:800,color:p.color}}>{p.count}</div>
+                    <div style={{fontSize:11,fontWeight:700,marginTop:2}}>{p.label}</div>
+                    <div style={{fontSize:10,color:"var(--text-muted)",marginTop:2}}>{p.desc}</div>
+                  </div>
+                ))}
+              </div>
+            </Card>
+          </div>
+        )}
+      </div>
+
+      {/* Footer */}
+      <div style={{borderTop:"1px solid var(--border)",padding:"12px 20px",textAlign:"center",fontSize:10,color:"var(--text-muted)"}}>
+        AI-Embedded BSM Architecture Explorer v3.0 · 설계문서 109건 + UI 2건 기반 · Product Owner: 이교원 · Effective: 2026-03-28
+      </div>
+    </div>
+  );
+}
+
+ReactDOM.createRoot(document.getElementById('root')).render(<BSMExplorer />);
+</script>
+</body>
+</html>

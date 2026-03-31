@@ -1,0 +1,352 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>BSM - 11 계약 관리 (PRO v2.0)</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { font-family: 'Pretendard Variable', Pretendard, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; }
+  #root { width: 100%; min-height: 100vh; }
+</style>
+</head>
+<body>
+<div id="root"></div>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.9/babel.min.js"></script>
+<script type="text/babel">
+const { useState, useRef, useEffect, useCallback, useMemo } = React;
+
+
+
+/* ═══════════════════════════════════════════════════════════════
+   AI-Embedded BSM PRO — 계약 관리
+   bsm_pro_contract.jsx v2.0
+   ─── Canonical Alignment ───
+   Service: CEO Functional Scope v1.0 §3.2 (Contract Execution Governance)
+   T-Series: T11 Legal Clause Tracker + T12 Clause Assembly Checker + T14 Ethical Compliance
+   Signal: Procurement Signal Def. v1.0 §6 (Contract Governance Signal)
+   Output: §6.3 Contract Governance Indicator
+   ═══════════════════════════════════════════════════════════════ */
+
+var C = {
+  brand:"#1E3A8A", white:"#FFFFFF", bg:"#F8FAFC",
+  t1:"#0F172A", t2:"#475569", t3:"#94A3B8",
+  bl:"#E2E8F0", bm:"#CBD5E1",
+  r:{sm:6,md:10,lg:14,xl:20,full:9999},
+  ok:{bg:"#F0FDF4",fg:"#166534",ac:"#22C55E",bd:"#86EFAC"},
+  warn:{bg:"#FFFBEB",fg:"#92400E",ac:"#F59E0B",bd:"#FCD34D"},
+  err:{bg:"#FEF2F2",fg:"#991B1B",ac:"#EF4444",bd:"#FCA5A5"},
+  info:{bg:"#EFF6FF",fg:"#1E40AF",ac:"#3B82F6",bd:"#93C5FD"},
+};
+
+function daysLeft(exp){return Math.round((new Date(exp)-new Date("2025-03-24"))/(1000*60*60*24));}
+function StatusColor(st){return st==="활성"?C.ok:st==="갱신검토"?C.err:st==="모니터링"||st==="성과검토"?C.warn:C.info;}
+var TYPE_ICON={"서비스":"📄","렌탈":"🔄","구독":"💳"};
+
+var CONTRACTS = [
+  {id:"CON-2024-001",name:"클라우드 인프라 운영",vendor:"삼성SDS",type:"서비스",amount:"₩1.8억/년",
+    start:"2024-01-01",expiry:"2025-06-30",manager:"IT팀 박과장",category:"IT/클라우드",
+    sla:[{name:"가용률",target:"99.9%",actual:"99.95%",ok:true},{name:"응답시간",target:"<2시간",actual:"1.2시간",ok:true},{name:"장애복구",target:"<4시간",actual:"3.5시간",ok:true}],
+    status:"활성",renewalAction:null,
+    // §3.2.2 조항 검증 (T11+T12)
+    clauseCheck:{engine:"T11+T12",checkedAt:"2025-03-01",totalClauses:12,passed:12,failed:0,
+      items:[{name:"SLA 보증",ok:true},{name:"면책 한도",ok:true},{name:"해지 조건",ok:true},{name:"지적재산권",ok:true}]},
+    // §3.2.4 변경 이력
+    changes:[],
+    // §6 Contract Governance Signal
+    signals:[]},
+  {id:"CON-2024-005",name:"통합 시설관리",vendor:"ISS코리아",type:"서비스",amount:"₩1.4억/년",
+    start:"2024-05-01",expiry:"2025-04-30",manager:"시설팀 최과장",category:"시설관리",
+    sla:[{name:"청소 품질",target:"90점+",actual:"82점",ok:false},{name:"경비 출석률",target:"98%+",actual:"96%",ok:false},{name:"민원 대응",target:"<24시간",actual:"18시간",ok:true}],
+    status:"갱신검토",renewalAction:"경쟁 견적 3곳 확보 후 재협상 또는 업체 변경",
+    clauseCheck:{engine:"T11+T12",checkedAt:"2025-02-15",totalClauses:10,passed:8,failed:2,
+      items:[{name:"SLA 보증",ok:false},{name:"위약금 조항",ok:true},{name:"해지 조건",ok:true},{name:"인력 교체 기준",ok:false}]},
+    changes:[{date:"2025-01-15",type:"범위 변경",desc:"3층 경비 인력 1명 추가 (월 ₩180만 증가)",actor:"시설팀"},
+      {date:"2024-09-20",type:"SLA 조정",desc:"청소 품질 기준 85점→90점 상향",actor:"시설팀+ISS"}],
+    signals:[{type:"갱신 시기",msg:"만료 D-37 — 즉시 갱신/재입찰 결정 필요",engine:"T11"},{type:"SLA 미달",msg:"청소 품질 82점 (목표 90점) — 성과 개선 요구 또는 업체 변경",engine:"T12"}]},
+  {id:"CON-2024-008",name:"IT 유지보수",vendor:"삼성SDS",type:"서비스",amount:"₩9,000만/년",
+    start:"2024-01-01",expiry:"2025-12-31",manager:"IT팀 박과장",category:"IT/클라우드",
+    sla:[{name:"장애 대응",target:"<1시간",actual:"0.8시간",ok:true},{name:"예방점검",target:"월1회",actual:"월1회",ok:true}],
+    status:"활성",renewalAction:null,
+    clauseCheck:{engine:"T11+T12",checkedAt:"2025-03-01",totalClauses:8,passed:8,failed:0,items:[]},
+    changes:[],signals:[]},
+  {id:"CON-2024-012",name:"정수기 렌탈",vendor:"코웨이",type:"렌탈",amount:"₩1.2억/년",
+    start:"2024-10-01",expiry:"2025-09-30",manager:"총무팀 김대리",category:"렌탈/리스",
+    sla:[{name:"설치 납기",target:"<5일",actual:"4.2일",ok:true},{name:"A/S 대응",target:"<24시간",actual:"22시간",ok:true}],
+    status:"활성",renewalAction:null,
+    clauseCheck:{engine:"T11+T12",checkedAt:"2025-02-01",totalClauses:6,passed:6,failed:0,items:[]},
+    changes:[],signals:[{type:"갱신 시기",msg:"만료 D-190 — 사전 검토 시기",engine:"T11"}]},
+  {id:"CON-2024-015",name:"복합기 렌탈",vendor:"신도리코",type:"렌탈",amount:"₩4,800만/년",
+    start:"2024-06-01",expiry:"2026-06-30",manager:"총무팀 이사원",category:"렌탈/리스",
+    sla:[{name:"출력 품질",target:"정상",actual:"정상",ok:true},{name:"토너 보충",target:"<2일",actual:"1.5일",ok:true}],
+    status:"활성",renewalAction:null,
+    clauseCheck:{engine:"T11+T12",checkedAt:"2025-01-15",totalClauses:6,passed:6,failed:0,items:[]},
+    changes:[],signals:[]},
+  {id:"SUB-2024-008",name:"Microsoft 365",vendor:"Microsoft",type:"구독",amount:"₩3,200만/년",
+    start:"2024-01-01",expiry:"2025-12-31",manager:"IT팀 박과장",category:"SaaS",
+    sla:[{name:"가용률",target:"99.9%",actual:"99.99%",ok:true}],
+    status:"활성",renewalAction:null,
+    clauseCheck:{engine:"T11",checkedAt:"2025-01-01",totalClauses:4,passed:4,failed:0,items:[]},
+    changes:[{date:"2025-02-01",type:"라이선스 추가",desc:"E3 라이선스 10석 추가 (월 ₩45만 증가)",actor:"IT팀"}],
+    signals:[]},
+  {id:"SUB-2024-011",name:"AWS 클라우드",vendor:"AWS",type:"구독",amount:"₩3,800만/년",
+    start:"2024-06-01",expiry:"2026-06-30",manager:"IT팀 박과장",category:"SaaS",
+    sla:[{name:"가용률",target:"99.99%",actual:"99.98%",ok:false}],
+    status:"모니터링",renewalAction:"가용률 SLA 미달 — 크레딧 청구 검토",
+    clauseCheck:{engine:"T11+T14",checkedAt:"2025-03-10",totalClauses:8,passed:7,failed:1,
+      items:[{name:"가용률 SLA",ok:false},{name:"크레딧 정책",ok:true},{name:"데이터 보호",ok:true},{name:"해지 조건",ok:true}]},
+    changes:[{date:"2025-03-05",type:"인스턴스 변경",desc:"미승인 인스턴스 3개 증설 감지 — 월 ₩1,600만 초과",actor:"시스템 감지"}],
+    signals:[{type:"조건 위반",msg:"SLA 가용률 99.98% (목표 99.99%) — 크레딧 청구 가능",engine:"T12"},{type:"비용 초과",msg:"미승인 인스턴스 증설 — 계약 범위 초과 비용 발생",engine:"T11+T14"}]},
+  {id:"CON-2024-020",name:"디지털 마케팅 대행",vendor:"나스미디어",type:"서비스",amount:"₩1.2억/년",
+    start:"2025-01-01",expiry:"2025-12-31",manager:"마케팅팀 김과장",category:"마케팅",
+    sla:[{name:"보고서 납기",target:"매월 5일",actual:"8~12일",ok:false},{name:"ROAS",target:">300%",actual:"280%",ok:false}],
+    status:"성과검토",renewalAction:"SLA 미달 2건 — 계약 갱신 시 조건 강화 또는 업체 변경",
+    clauseCheck:{engine:"T11+T12",checkedAt:"2025-02-20",totalClauses:8,passed:6,failed:2,
+      items:[{name:"성과 보고 의무",ok:false},{name:"ROAS 보증",ok:false},{name:"해지 조건",ok:true},{name:"위약금",ok:true}]},
+    changes:[{date:"2025-02-15",type:"범위 변경",desc:"SNS 채널 2개 추가 (예산 동일, 성과 분산 우려)",actor:"마케팅팀"}],
+    signals:[{type:"SLA 미달",msg:"보고서 납기 지연 + ROAS 미달 — 성과 미팅 또는 업체 변경 검토",engine:"T12"},{type:"범위 변경",msg:"SNS 채널 추가로 계약 범위 변경 — 성과 기준 재정의 필요",engine:"T11"}]},
+];
+
+function ContractDetail({ct}){
+  var dl=daysLeft(ct.expiry);
+  var sc=StatusColor(ct.status);
+  var urgent=dl<60;
+  return(
+    <div style={{display:"flex",flexDirection:"column",gap:10}}>
+      {/* Header */}
+      <div style={{padding:14,borderRadius:C.r.md,background:sc.bg,border:"2px solid "+sc.ac}}>
+        <div style={{display:"flex",justifyContent:"space-between",alignItems:"center"}}>
+          <div>
+            <div style={{fontSize:16,fontWeight:700,color:sc.fg}}>{ct.name}</div>
+            <div style={{fontSize:12,color:sc.fg,marginTop:2}}>{ct.id+" · "+ct.vendor+" · "+ct.type}</div>
+          </div>
+          <div style={{textAlign:"right"}}>
+            <div style={{fontSize:18,fontWeight:700,color:C.brand}}>{ct.amount}</div>
+            <span style={{fontSize:10,fontWeight:600,padding:"2px 8px",borderRadius:9999,color:sc.fg,background:sc.bg,border:"1px solid "+sc.ac}}>{ct.status}</span>
+          </div>
+        </div>
+      </div>
+
+      {/* 기본 정보 + 만료 */}
+      <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:10}}>
+        <div style={{padding:12,borderRadius:C.r.md,background:C.bg,border:"1px solid "+C.bl}}>
+          <div style={{fontSize:12,fontWeight:600,color:C.t1,marginBottom:8}}>계약 정보</div>
+          <div style={{fontSize:12,color:C.t2,lineHeight:2}}>
+            <div>{"업체: "+ct.vendor}</div>
+            <div>{"유형: "+ct.type+" · "+ct.category}</div>
+            <div>{"기간: "+ct.start+" ~ "+ct.expiry}</div>
+            <div>{"담당: "+ct.manager}</div>
+          </div>
+        </div>
+        <div style={{padding:12,borderRadius:C.r.md,background:urgent?"#FEF2F2":dl<120?"#FFFBEB":"#F0FDF4",border:"1px solid "+(urgent?"#FCA5A5":dl<120?"#FCD34D":"#86EFAC")}}>
+          <div style={{fontSize:12,fontWeight:600,color:urgent?"#991B1B":dl<120?"#92400E":"#166534",marginBottom:8}}>만료까지</div>
+          <div style={{fontSize:32,fontWeight:700,color:urgent?"#991B1B":dl<120?"#92400E":"#166534",textAlign:"center"}}>{dl+"일"}</div>
+          <div style={{fontSize:11,color:urgent?"#991B1B":dl<120?"#92400E":"#166534",textAlign:"center",marginTop:4}}>
+            {urgent?"만료 임박 — 즉시 조치 필요":dl<120?"갱신 검토 시기":"여유 있음"}
+          </div>
+        </div>
+      </div>
+
+      {/* SLA */}
+      <div style={{padding:12,borderRadius:C.r.md,background:C.bg,border:"1px solid "+C.bl}}>
+        <div style={{fontSize:12,fontWeight:600,color:C.t1,marginBottom:8}}>SLA 이행 현황</div>
+        {ct.sla.map(function(s,i){return(
+          <div key={i} style={{display:"flex",alignItems:"center",gap:8,padding:"6px 0",borderBottom:i<ct.sla.length-1?"1px solid "+C.bl:"none"}}>
+            <div style={{width:20,height:20,borderRadius:10,background:s.ok?"#22C55E":"#EF4444",color:"#FFF",display:"flex",alignItems:"center",justifyContent:"center",fontSize:11,fontWeight:700,flexShrink:0}}>{s.ok?"✓":"!"}</div>
+            <span style={{flex:1,fontSize:12,color:C.t1}}>{s.name}</span>
+            <span style={{fontSize:11,color:C.t3}}>{"목표: "+s.target}</span>
+            <span style={{fontSize:12,fontWeight:600,color:s.ok?"#166534":"#991B1B"}}>{s.actual}</span>
+          </div>
+        );})}
+        {ct.sla.some(function(s){return !s.ok;})&&
+          <div style={{marginTop:8,padding:"6px 10px",borderRadius:C.r.sm,background:"#FEF2F2",border:"1px solid #FCA5A5",fontSize:11,color:"#991B1B"}}>
+            {"SLA 미달 "+ct.sla.filter(function(s){return !s.ok;}).length+"건 — 업체 성과 미팅 또는 크레딧 청구 검토"}
+          </div>}
+      </div>
+
+      {/* §3.2.2 조항 검증 (T11+T12) */}
+      {ct.clauseCheck&&<div style={{padding:12,borderRadius:C.r.md,background:C.bg,border:"1px solid "+C.bl}}>
+        <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:8}}>
+          <div style={{display:"flex",alignItems:"center",gap:6}}>
+            <span style={{fontSize:12,fontWeight:600,color:C.t1}}>조항 검증</span>
+            <span style={{fontSize:10,color:C.t3}}>{ct.clauseCheck.engine}</span>
+          </div>
+          <span style={{fontSize:10,color:C.t3}}>{"검증일: "+ct.clauseCheck.checkedAt}</span>
+        </div>
+        <div style={{display:"flex",gap:8,marginBottom:8}}>
+          <div style={{flex:1,padding:"6px 10px",borderRadius:C.r.sm,background:"#F0FDF4",border:"1px solid #86EFAC",textAlign:"center"}}>
+            <div style={{fontSize:16,fontWeight:700,color:"#166534"}}>{ct.clauseCheck.passed}</div>
+            <div style={{fontSize:10,color:"#166534"}}>적합</div>
+          </div>
+          <div style={{flex:1,padding:"6px 10px",borderRadius:C.r.sm,background:ct.clauseCheck.failed>0?"#FEF2F2":"#F8FAFC",border:"1px solid "+(ct.clauseCheck.failed>0?"#FCA5A5":"#E2E8F0"),textAlign:"center"}}>
+            <div style={{fontSize:16,fontWeight:700,color:ct.clauseCheck.failed>0?"#991B1B":"#94A3B8"}}>{ct.clauseCheck.failed}</div>
+            <div style={{fontSize:10,color:ct.clauseCheck.failed>0?"#991B1B":"#94A3B8"}}>부적합</div>
+          </div>
+          <div style={{flex:1,padding:"6px 10px",borderRadius:C.r.sm,background:"#F8FAFC",border:"1px solid #E2E8F0",textAlign:"center"}}>
+            <div style={{fontSize:16,fontWeight:700,color:C.t1}}>{ct.clauseCheck.totalClauses}</div>
+            <div style={{fontSize:10,color:C.t3}}>총 조항</div>
+          </div>
+        </div>
+        {ct.clauseCheck.items.length>0&&ct.clauseCheck.items.map(function(ci,idx){return(
+          <div key={idx} style={{display:"flex",alignItems:"center",gap:6,padding:"4px 0",fontSize:11}}>
+            <div style={{width:14,height:14,borderRadius:7,background:ci.ok?"#22C55E":"#EF4444",color:"#FFF",display:"flex",alignItems:"center",justifyContent:"center",fontSize:8,fontWeight:700,flexShrink:0}}>{ci.ok?"✓":"!"}</div>
+            <span style={{color:ci.ok?C.t2:"#991B1B"}}>{ci.name}</span>
+          </div>
+        );})}
+      </div>}
+
+      {/* §3.2.4 변경 이력 */}
+      {ct.changes.length>0&&<div style={{padding:12,borderRadius:C.r.md,background:C.bg,border:"1px solid "+C.bl}}>
+        <div style={{fontSize:12,fontWeight:600,color:C.t1,marginBottom:8}}>{"변경 이력 ("+ct.changes.length+"건)"}</div>
+        {ct.changes.map(function(ch,ci){return(
+          <div key={ci} style={{display:"flex",gap:8,padding:"6px 0",borderBottom:ci<ct.changes.length-1?"1px solid "+C.bl:"none",fontSize:11,alignItems:"flex-start"}}>
+            <span style={{color:C.t3,flexShrink:0,width:70}}>{ch.date}</span>
+            <span style={{fontWeight:600,padding:"1px 6px",borderRadius:9999,color:"#92400E",background:"#FFFBEB",border:"1px solid #FCD34D",flexShrink:0}}>{ch.type}</span>
+            <span style={{color:C.t2,flex:1}}>{ch.desc}</span>
+            <span style={{color:C.t3,flexShrink:0}}>{ch.actor}</span>
+          </div>
+        );})}
+      </div>}
+
+      {/* §6 Contract Governance Signal */}
+      {ct.signals.length>0&&<div style={{padding:12,borderRadius:C.r.md,background:"#FFFBEB",border:"1px solid #FCD34D"}}>
+        <div style={{fontSize:12,fontWeight:600,color:"#92400E",marginBottom:6}}>{"Contract Governance Signal ("+ct.signals.length+"건)"}</div>
+        {ct.signals.map(function(sig,si){return(
+          <div key={si} style={{display:"flex",gap:8,padding:"6px 0",borderBottom:si<ct.signals.length-1?"1px solid #FCD34D":"none",fontSize:11,alignItems:"flex-start"}}>
+            <span style={{fontWeight:600,padding:"1px 6px",borderRadius:9999,color:"#92400E",background:"#FFFBEB",border:"1px solid #F59E0B",flexShrink:0}}>{sig.type}</span>
+            <span style={{color:"#92400E",flex:1}}>{sig.msg}</span>
+            <span style={{fontSize:10,color:C.t3,flexShrink:0}}>{sig.engine}</span>
+          </div>
+        );})}
+      </div>}
+
+      {/* 갱신 액션 */}
+      {ct.renewalAction&&
+        <div style={{padding:12,borderRadius:C.r.md,background:"#FFFBEB",border:"1px solid #FCD34D"}}>
+          <div style={{fontSize:12,fontWeight:600,color:"#92400E",marginBottom:4}}>갱신/조치 필요</div>
+          <div style={{fontSize:12,color:"#92400E"}}>{ct.renewalAction}</div>
+        </div>}
+
+      {/* Actions */}
+      <div style={{display:"flex",gap:6,flexWrap:"wrap"}}>
+        <button style={{padding:"8px 14px",borderRadius:C.r.md,border:"1px solid "+C.bm,background:C.white,fontSize:12,color:C.t2}}>계약서 조회</button>
+        <button style={{padding:"8px 14px",borderRadius:C.r.md,border:"1px solid "+C.bm,background:C.white,fontSize:12,color:C.t2}}>성과 리포트</button>
+        {dl<120&&<button style={{padding:"8px 14px",borderRadius:C.r.md,border:"none",background:"#F59E0B",fontSize:12,color:"#FFF",fontWeight:600}}>갱신 프로세스 시작</button>}
+        {ct.sla.some(function(s){return !s.ok;})&&
+          <button style={{padding:"8px 14px",borderRadius:C.r.md,border:"none",background:"#EF4444",fontSize:12,color:"#FFF",fontWeight:600}}>SLA 위반 조치</button>}
+      </div>
+
+      <div style={{padding:8,borderRadius:C.r.sm,background:"#F0F4FF",border:"1px solid #BFDBFE",fontSize:10,color:"#1E40AF",lineHeight:1.5}}>
+        <span>{"T11 Legal Clause Tracker + T12 Clause Assembly Checker가 계약 조항을 자동 검증합니다. T14 Ethical Compliance가 ESG 조항을 확인합니다."}</span>
+      </div>
+    </div>
+  );
+}
+
+function App(){
+  var[sel,setSel]=useState(null);
+  var[filter,setFilter]=useState("all");
+
+  var filtered=CONTRACTS.filter(function(ct){
+    if(filter==="all")return true;
+    if(filter==="expiring")return daysLeft(ct.expiry)<120;
+    if(filter==="sla_issue")return ct.sla.some(function(s){return !s.ok;});
+    if(filter==="signals")return ct.signals.length>0;
+    return ct.type===filter;
+  });
+
+  return(
+  <div style={{width:"100%",height:"100%",background:"#E8ECF1",display:"flex",flexDirection:"column",fontFamily:"'Pretendard Variable',Pretendard,-apple-system,sans-serif",overflow:"hidden"}}>
+    <style>{`@import url('https://cdn.jsdelivr.net/gh/orioncactus/pretendard/dist/web/variable/pretendardvariable-dynamic-subset.css');*{box-sizing:border-box;margin:0;padding:0}::-webkit-scrollbar{width:5px}::-webkit-scrollbar-track{background:transparent}::-webkit-scrollbar-thumb{background:#E2E8F0;border-radius:3px}button{cursor:pointer;font-family:inherit;transition:all .15s}button:hover:not(:disabled){filter:brightness(1.05)}`}</style>
+
+    <div style={{height:28,background:"#2D3748",display:"flex",alignItems:"center",padding:"0 14px",gap:6,flexShrink:0}}>
+      <div style={{display:"flex",gap:4}}><div style={{width:8,height:8,borderRadius:4,background:"#FC5C65"}}/><div style={{width:8,height:8,borderRadius:4,background:"#FED330"}}/><div style={{width:8,height:8,borderRadius:4,background:"#26DE81"}}/></div>
+      <span style={{color:"#A0AEC0",fontSize:10,fontWeight:500,marginLeft:8}}>AI Embedded BSM PRO — 계약 관리 (CEO §3.2)</span>
+    </div>
+
+    <div style={{flex:1,display:"flex",alignItems:"center",justifyContent:"center",padding:12,overflow:"hidden"}}>
+    <div style={{width:"100%",maxWidth:1060,height:"100%",maxHeight:"88%",display:"flex",flexDirection:"column",borderRadius:C.r.xl,overflow:"hidden",boxShadow:"0 24px 80px rgba(0,0,0,.35)",background:C.white}}>
+
+      {/* Header */}
+      <div style={{padding:"10px 20px",background:"linear-gradient(135deg,#1E40AF,#3B82F6)",display:"flex",alignItems:"center",justifyContent:"space-between",flexShrink:0}}>
+        <div style={{display:"flex",alignItems:"center",gap:10}}>
+          <div style={{width:32,height:32,borderRadius:8,background:"rgba(255,255,255,.15)",display:"flex",alignItems:"center",justifyContent:"center",fontSize:16}}>📑</div>
+          <div>
+            <div style={{display:"flex",alignItems:"center",gap:8}}>
+              <span style={{fontWeight:700,fontSize:16,color:"#FFF"}}>계약 관리</span>
+              <span style={{fontSize:11,color:"rgba(255,255,255,.6)"}}>CEO · T11+T12+T14</span>
+            </div>
+            <div style={{fontSize:11,color:"rgba(255,255,255,.7)"}}>조항 검증 · SLA 모니터링 · 변경 이력 · 갱신 워크플로우</div>
+          </div>
+        </div>
+        <div style={{display:"flex",alignItems:"center",gap:6}}>
+          <span style={{fontSize:10,fontWeight:600,padding:"2px 8px",borderRadius:9999,color:"#FFF",background:"rgba(255,255,255,.3)"}}>{"만료 임박 "+CONTRACTS.filter(function(c){return daysLeft(c.expiry)<60;}).length}</span>
+          <span style={{fontSize:10,fontWeight:600,padding:"2px 8px",borderRadius:9999,color:"#FFF",background:"rgba(255,255,255,.3)"}}>{"SLA 미달 "+CONTRACTS.filter(function(c){return c.sla.some(function(s){return !s.ok;});}).length}</span>
+          <span style={{fontSize:10,fontWeight:600,padding:"2px 8px",borderRadius:9999,color:"#FFF",background:"rgba(255,255,255,.3)"}}>{"Signal "+CONTRACTS.filter(function(c){return c.signals.length>0;}).length}</span>
+          <span style={{fontSize:10,fontWeight:600,padding:"3px 10px",borderRadius:9999,color:"#FFF",background:"rgba(255,255,255,.2)"}}>PRO</span>
+        </div>
+      </div>
+
+      {/* Body */}
+      <div style={{flex:1,display:"flex",overflow:"hidden",minHeight:0}}>
+        {/* Left */}
+        <div style={{width:320,borderRight:"1px solid "+C.bl,display:"flex",flexDirection:"column",flexShrink:0}}>
+          <div style={{padding:"8px 10px",borderBottom:"1px solid "+C.bl,display:"flex",gap:4,flexWrap:"wrap"}}>
+            {[{id:"all",label:"전체"},{id:"expiring",label:"만료 임박"},{id:"sla_issue",label:"SLA 미달"},{id:"signals",label:"Signal"},{id:"서비스",label:"서비스"},{id:"렌탈",label:"렌탈"},{id:"구독",label:"구독"}].map(function(f){
+              var ac=filter===f.id;
+              return <button key={f.id} onClick={function(){setFilter(f.id);setSel(null);}} style={{padding:"4px 10px",borderRadius:9999,border:ac?"none":"1px solid "+C.bl,background:ac?C.brand:C.white,color:ac?"#FFF":C.t2,fontSize:11,fontWeight:ac?600:400}}>{f.label}</button>;
+            })}
+          </div>
+          <div style={{flex:1,overflowY:"auto"}}>
+            {filtered.map(function(ct,i){
+              var dl=daysLeft(ct.expiry);
+              var scc=StatusColor(ct.status);
+              var active=sel===i;
+              var slaFail=ct.sla.some(function(s){return !s.ok;});
+              return(
+                <div key={i} onClick={function(){setSel(i);}} style={{padding:"10px 14px",borderBottom:"1px solid "+C.bl,cursor:"pointer",background:active?scc.bg:C.white,borderLeft:active?"3px solid "+scc.ac:"3px solid transparent"}}>
+                  <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:3}}>
+                    <div style={{display:"flex",alignItems:"center",gap:6}}>
+                      <span style={{fontSize:12}}>{TYPE_ICON[ct.type]||"📄"}</span>
+                      <span style={{fontSize:13,fontWeight:600,color:C.t1}}>{ct.name}</span>
+                    </div>
+                    <span style={{fontSize:10,fontWeight:600,padding:"2px 6px",borderRadius:9999,color:scc.fg,background:scc.bg}}>{ct.status}</span>
+                  </div>
+                  <div style={{display:"flex",justifyContent:"space-between",fontSize:11,marginBottom:2}}>
+                    <span style={{color:C.t3}}>{ct.vendor}</span>
+                    <span style={{fontWeight:600,color:C.brand}}>{ct.amount}</span>
+                  </div>
+                  <div style={{display:"flex",justifyContent:"space-between",fontSize:10}}>
+                    <span style={{color:dl<60?"#991B1B":dl<120?"#92400E":C.t3}}>{"만료: "+ct.expiry+" ("+dl+"일)"}</span>
+                    <div style={{display:"flex",gap:6}}>
+                      {slaFail&&<span style={{color:"#991B1B",fontWeight:600}}>SLA미달</span>}
+                      {ct.signals.length>0&&<span style={{color:"#1E40AF",fontWeight:600}}>{"Signal "+ct.signals.length}</span>}
+                    </div>
+                  </div>
+                </div>
+              );
+            })}
+            {filtered.length===0&&<div style={{padding:20,textAlign:"center",color:C.t3,fontSize:12}}>해당 조건의 계약이 없습니다.</div>}
+          </div>
+        </div>
+
+        {/* Right */}
+        <div style={{flex:1,overflowY:"auto",padding:14}}>
+          {sel===null&&<div style={{display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",height:"100%",color:C.t3}}>
+            <span style={{fontSize:36,marginBottom:12}}>📑</span>
+            <span style={{fontSize:14}}>왼쪽에서 계약을 선택해 주세요</span>
+          </div>}
+          {sel!==null&&filtered[sel]&&<ContractDetail ct={filtered[sel]}/>}
+        </div>
+      </div>
+    </div>
+    </div>
+  </div>);
+}
+
+ReactDOM.createRoot(document.getElementById('root')).render(<App />);
+</script>
+</body>
+</html>
