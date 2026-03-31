@@ -1,0 +1,564 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>BSM — 06 Spend Analytics (PRO v2.1)</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { font-family: 'Pretendard Variable', Pretendard, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; }
+  #root { width: 100%; min-height: 100vh; }
+</style>
+</head>
+<body>
+<div id="root"></div>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.9/babel.min.js"></script>
+<script type="text/babel">
+const { useState, useRef, useEffect, useCallback, useMemo } = React;
+
+
+/* ═══════════════════════════════════════════════════════════════
+   AI-Embedded BSM PRO — Spend Analytics 대시보드
+   bsm_pro_spend.jsx v2.0
+   ─── Canonical Alignment ───
+   Service: SCRL Functional Scope v1.0 (§3.1~3.3, §4, §6)
+   Engines: 수요신호 + 유사사례 + 비교평가 + 이상탐지
+   Signal: Procurement Signal Definition v1.0 (Cost Intelligence, Competitive Sourcing)
+   Output: §6.1 Cost Insight + §6.2 Savings Opportunity + §6.3 Price Risk Alert + §6.4 Spend Pattern
+   Tier: PRO (LITE MVP §10.2 제외 대상)
+   ═══════════════════════════════════════════════════════════════ */
+
+var T={
+  brand:"#1E3A8A",brandLt:"#2563EB",surface:"#FFFFFF",surfAlt:"#F8FAFC",
+  text:{primary:"#0F172A",secondary:"#475569",muted:"#64748B"},
+  border:{light:"#E2E8F0",medium:"#CBD5E1"},
+  radius:{sm:6,md:10,lg:14,xl:20,full:9999},
+  shadow:{sm:"0 1px 2px rgba(0,0,0,.05)",md:"0 4px 12px rgba(0,0,0,.08)"},
+  font:{sans:"'Pretendard Variable',Pretendard,-apple-system,sans-serif"},
+  state:{complete:{bg:"#F0FDF4",fg:"#166534",accent:"#22C55E",border:"#86EFAC"},review:{bg:"#FFFBEB",fg:"#92400E",accent:"#F59E0B",border:"#FCD34D"},blocked:{bg:"#FEF2F2",fg:"#991B1B",accent:"#EF4444",border:"#FCA5A5"},progress:{bg:"#EFF6FF",fg:"#1E40AF",accent:"#3B82F6",border:"#93C5FD"}},
+};
+
+function Badge({children,color,bg}){return <span style={{display:"inline-block",fontSize:10,fontWeight:600,padding:"2px 8px",borderRadius:T.radius.full,color:color,background:bg}}>{children}</span>;}
+function SigBadge({type}){
+  if(!type)return null;
+  var m={cost:{l:"Cost Signal",c:T.state.blocked.fg,b:T.state.blocked.bg},savings:{l:"Savings",c:T.state.complete.fg,b:T.state.complete.bg},competitive:{l:"경쟁",c:T.state.progress.fg,b:T.state.progress.bg},risk:{l:"Risk",c:T.state.review.fg,b:T.state.review.bg}};
+  var s=m[type];
+  if(!s)s=m.cost;
+  return <span style={{display:"inline-block",fontSize:10,fontWeight:600,padding:"2px 8px",borderRadius:T.radius.full,color:s.c,background:s.b,verticalAlign:"middle"}}>{s.l}</span>;
+}
+
+// ═══ §3.3 지출 구조 분석 Mock ═══
+var SUMMARY=[
+  {label:"총 지출",value:"₩18.7억",sub:"전년 대비 -4.2%",color:T.brand,icon:"💰"},
+  {label:"구매 건수",value:"1,247건",sub:"전년 대비 +12%",color:"#7C3AED",icon:"📋"},
+  {label:"절감 실현",value:"₩2.1억",sub:"목표 대비 87%",color:T.state.complete.accent,icon:"📉"},
+  {label:"이상 단가 Alert",value:"6건+1건",sub:"이상단가 6 · 경쟁부재 1",color:T.state.blocked.accent,icon:"🚨"},
+];
+
+var DEPT_SPEND=[
+  {dept:"IT/ICT",amount:52000,pct:27.8,change:-3.2,top:"클라우드 구독 ₩3.8억"},
+  {dept:"시설·건물관리",amount:38000,pct:20.3,change:+1.5,top:"청소·경비 ₩1.2억"},
+  {dept:"마케팅",amount:31000,pct:16.6,change:-8.4,top:"디지털광고 ₩1.5억"},
+  {dept:"생산관리",amount:24000,pct:12.8,change:+2.1,top:"설비유지보수 ₩0.9억"},
+  {dept:"인사·복리후생",amount:18000,pct:9.6,change:-1.0,top:"건강검진 ₩0.4억"},
+  {dept:"물류",amount:12000,pct:6.4,change:+5.3,top:"국내운송 ₩0.6억"},
+  {dept:"전문용역",amount:8000,pct:4.3,change:-2.0,top:"법률자문 ₩0.3억"},
+  {dept:"기타",amount:4000,pct:2.1,change:0,top:"사무용품 ₩0.2억"},
+];
+
+var CATEGORY_SPEND=[
+  {cat:"클라우드/SaaS 구독",amount:"₩5.2억",pct:27.8,gt:"G27~G28",trend:"↑"},
+  {cat:"시설관리 용역",amount:"₩3.1억",pct:16.6,gt:"G18~G23",trend:"→"},
+  {cat:"디지털 마케팅",amount:"₩2.8억",pct:15.0,gt:"G21~G25",trend:"↓"},
+  {cat:"IT 장비",amount:"₩2.3억",pct:12.3,gt:"G11~G13",trend:"↓"},
+  {cat:"컨설팅·전문용역",amount:"₩1.9억",pct:10.2,gt:"G24~G25",trend:"→"},
+  {cat:"렌탈/리스",amount:"₩1.4억",pct:7.5,gt:"G19",trend:"→"},
+  {cat:"사무용품·소모품",amount:"₩0.8억",pct:4.3,gt:"G01~G02",trend:"↓"},
+  {cat:"보험",amount:"₩0.7억",pct:3.7,gt:"G18",trend:"→"},
+  {cat:"기타",amount:"₩0.5억",pct:2.7,gt:"G06",trend:"→"},
+];
+
+// ═══ NEW §3.3.1 Account별 ═══
+var ACCOUNT_SPEND=[
+  {code:"5100",name:"IT 운영비",amount:52000,pct:27.8,budget:60000,usage:86.7},
+  {code:"5200",name:"시설 관리비",amount:38000,pct:20.3,budget:40000,usage:95.0},
+  {code:"5300",name:"마케팅비",amount:31000,pct:16.6,budget:35000,usage:88.6},
+  {code:"5400",name:"생산 관리비",amount:24000,pct:12.8,budget:30000,usage:80.0},
+  {code:"5500",name:"인사·복리후생비",amount:18000,pct:9.6,budget:20000,usage:90.0},
+  {code:"5600",name:"물류비",amount:12000,pct:6.4,budget:10000,usage:120.0},
+  {code:"5700",name:"전문용역비",amount:8000,pct:4.3,budget:12000,usage:66.7},
+  {code:"5900",name:"기타 경비",amount:4000,pct:2.1,budget:5000,usage:80.0},
+];
+
+var SUPPLIER_TOP=[
+  {name:"삼성SDS",amount:"₩3.2억",share:"17.1%",contracts:3,risk:"낮음",trend:"stable",riskScores:{fin:"G",del:"G",qual:"G",esg:"G"}},
+  {name:"코웨이",amount:"₩1.8억",share:"9.6%",contracts:2,risk:"낮음",trend:"stable",riskScores:{fin:"G",del:"G",qual:"G",esg:"Y"}},
+  {name:"ISS코리아",amount:"₩1.4억",share:"7.5%",contracts:1,risk:"낮음",trend:"stable",riskScores:{fin:"G",del:"G",qual:"Y",esg:"G"}},
+  {name:"나스미디어",amount:"₩1.2억",share:"6.4%",contracts:1,risk:"보통",trend:"up",riskScores:{fin:"G",del:"Y",qual:"G",esg:"Y"}},
+  {name:"신도리코",amount:"₩0.9억",share:"4.8%",contracts:1,risk:"낮음",trend:"stable",riskScores:{fin:"G",del:"G",qual:"G",esg:"G"}},
+];
+
+// ═══ §3.1 이상 단가 탐지 — 판정 근거 강화 ═══
+// 판정 기준: 계약가 대비 +10%=주의, +20%=경고 / 시장가 대비 +15%=주의, +30%=경고 / 3개월 연속 상승=추세 경고
+var ANOMALY_THRESHOLD={contract:{warn:10,alert:20},market:{warn:15,alert:30},trend:3};
+var ANOMALY_ALERTS=[
+  {id:"ANO-001",type:"contract_deviation",severity:"HIGH",
+    item:"AWS 클라우드 월과금",category:"L3-080501",vendor:"AWS",
+    currentPrice:"₩4,800만/월 (총액)",contractPrice:"₩3,200만/월",deviation:"+50%",
+    overAmount:"월 ₩1,600만 초과 (연 ₩1.92억)",
+    baseline:"계약서 단가 (2024.06 체결, 유효 ~2026.05)",
+    threshold:"계약가 대비 +20% 이상 → 경고 (실제 +50%)",
+    cause:"미승인 인스턴스 3대 증설 (10월~). Reserved → On-Demand 전환 건 확인 필요",
+    detail:"계약 단가 대비 50% 초과. 월과금 총액 기준.",
+    engine:"AI 비용 분석",signal:"cost",action:"계약 범위 재확인 + 미승인 인스턴스 정리"},
+  {id:"ANO-002",type:"market_benchmark",severity:"HIGH",
+    item:"법률 자문 수임료",category:"L3-060101",vendor:"법무법인 태평양",
+    currentPrice:"₩850만/건 (단가)",contractPrice:"—",deviation:"시장가 +32%",
+    overAmount:"건당 ₩205만 초과 (연 4건 = ₩820만)",
+    baseline:"대한변협 2024 보고서 — 기업법무 평균 ₩645만",
+    threshold:"시장가 대비 +30% 이상 → 경고 (실제 +32%)",
+    cause:"M&A 전문 프리미엄 추정. 일반 법무와 분리 비교 필요",
+    detail:"동종 법률 서비스 시장 평균 대비 32% 초과. 전문 분야 차이 감안 필요.",
+    engine:"AI 비용+유사사례 분석",signal:"cost",action:"분야별 벤치마크 세분화 + 대안 법무법인 비교"},
+  {id:"ANO-003",type:"repeated_increase",severity:"MEDIUM",
+    item:"사무용품 월 구매",category:"L3-010101",vendor:"코리아오피스",
+    currentPrice:"₩320만/월 (총액)",contractPrice:"₩280만/월",deviation:"+14% (3개월 연속↑)",
+    overAmount:"월 ₩40만 초과 (분기 ₩120만)",
+    baseline:"연간 계약 단가 ₩280만/월 (2025.01 체결)",
+    threshold:"3개월 연속 상승 → 추세 경고",
+    cause:"수량 증가(+8%) + 단가 인상(+6%). 신규 품목 3종 추가가 주요인",
+    detail:"월별: 280→295→310→320만. 단가 인상분만 보면 +6%.",
+    engine:"AI 비용+수요패턴 분석",signal:"cost",action:"신규 품목 단가 재협상 + 수량 적정성 검토"},
+  {id:"ANO-004",type:"supplier_dispersion",severity:"MEDIUM",
+    item:"27인치 모니터 FHD",category:"L3-080202",vendor:"(복수 3곳)",
+    currentPrice:"₩28~45만/대 (단가)",contractPrice:"—",deviation:"편차 61%",
+    overAmount:"최저가 대비 평균 ₩8만/대 초과 (연 200대 = ₩1,600만)",
+    baseline:"동일 사양(27\" FHD, 75Hz, HDMI) 3곳 견적 비교. 4K(₩52만) 1건 별도 분류",
+    threshold:"동일 사양 공급사 편차 +30% 이상 → 경고 (실제 61%)",
+    cause:"공급사별 유통 마진 차이. 사양 정규화 후 재산출(86%→61%)",
+    detail:"FHD 27인치 기준: 28만/35만/45만. 4K ₩52만은 별도 분류됨.",
+    engine:"AI 비용+비교 분석",signal:"competitive",action:"표준 사양 + 기준 단가 수립 → 카탈로그 등록 권장"},
+  {id:"ANO-005",type:"emergency_premium",severity:"LOW",
+    item:"긴급 소모품 구매 (3건)",category:"L3-010101",vendor:"(복수)",
+    currentPrice:"평균 +18% (단가)",contractPrice:"정상가 기준",deviation:"+18%",
+    overAmount:"총 ₩85만 (분기). 총 지출 대비 0.5%",
+    baseline:"동일 품목 정상 구매 단가",
+    threshold:"긴급 할증 +15% 이상 → 주의 (실제 +18%)",
+    cause:"재고 부족 2건 + 설비 고장 1건. 재고 안전수량 설정으로 예방 가능",
+    detail:"이번 분기 긴급 구매 3건. 총액 대비 비중 0.5%로 경미.",
+    engine:"AI 비용 분석",signal:"risk",action:"재고 안전수량 설정 + 긴급 구매 빈도 모니터링"},
+  {id:"ANO-007",type:"contract_deviation",severity:"LOW",
+    item:"택배 서비스 초과",category:"L3-010301",vendor:"CJ대한통운",
+    currentPrice:"₩180만/월 (총액)",contractPrice:"₩150만/월 (300건 기준)",deviation:"+20%",
+    overAmount:"월 ₩30만 초과 (분기 ₩90만)",
+    baseline:"월 300건 기준 계약. 실제 380건/월 (+27%)",
+    threshold:"계약가 대비 +20% 이상 → 경고",
+    cause:"물량 증가(+27%). 계약 물량 상향 시 단가 재산정 가능",
+    detail:"계약 물량 초과분 건당 과금. 물량 기준 재설정이 더 경제적.",
+    engine:"AI 비용 분석",signal:"cost",action:"계약 물량 400건으로 상향 재협상 (예상 단가 -5%)"},
+];
+
+// ═══ 경쟁 부재 경고 (이상 단가와 분리 — 가격이 아닌 구매 방식 문제) ═══
+var COMPETITION_ALERTS=[
+  {id:"CMP-001",type:"no_competition",severity:"MEDIUM",
+    item:"IT 보안솔루션 갱신",category:"L3-080402",vendor:"S사 보안",
+    currentPrice:"₩1,200만/년",contractPrice:"₩1,200만/년",
+    renewalCount:"3회 연속 수의계약",
+    baseline:"경쟁 입찰 미실시 기간 3년",
+    threshold:"연속 갱신 3회 이상 → 재입찰 의무 (감사 핵심 지적사항)",
+    cause:"초기 도입 시 기술 종속. 현재 대체 가능 솔루션 2종 확인",
+    detail:"가격 이상은 아니나 3년간 경쟁 없이 갱신. 시장가 비교 자체가 불가.",
+    engine:"AI 비용+유사사례 분석",signal:"competitive",action:"차기 갱신(2026.06) 시 경쟁 입찰 전환 · 대체 솔루션 PoC"},
+];
+
+// ═══ §3.2 절감 신호 5종 ═══
+var SAVINGS_OPP=[
+  // §3.2.1 구매 통합 절감
+  {title:"클라우드 라이선스 통합",desc:"AWS+Azure 중복 구독 3건 → 통합 시 ₩4,200만 절감",impact:"₩4,200만",priority:"High",status:"미착수",type:"consolidation",engine:"AI 비용+유사사례 분석",signal:"savings"},
+  {title:"청소용역 거점 통합",desc:"3개 거점 개별 계약 → 통합 발주 시 볼륨 할인",impact:"₩3,600만",priority:"High",status:"미착수",type:"consolidation",engine:"AI 수요패턴+비용 분석",signal:"savings"},
+  // §3.2.2 장기 계약 절감
+  {title:"사무용품 연간 단가계약",desc:"월별 개별 구매 → 연간 계약 전환 시 단가 15% 인하",impact:"₩1,200만",priority:"Medium",status:"검토중",type:"long_term",engine:"AI 유사사례+비용 분석",signal:"savings"},
+  // §3.2.3 공급사 재협상 후보 — NEW
+  {title:"나스미디어 광고 단가 재협상",desc:"시장 평균 대비 12% 고가. 거래량 증가 기반 재협상 여지.",impact:"₩960만",priority:"High",status:"미착수",type:"renegotiation",engine:"AI 비용+비교 분석",signal:"savings"},
+  {title:"ISS코리아 시설관리 조건 재협상",desc:"계약 2회차 갱신. 공급사 성과 양호하나 시장가 3% 하락.",impact:"₩450만",priority:"Medium",status:"검토중",type:"renegotiation",engine:"AI 비용+유사사례 분석",signal:"savings"},
+  // §3.2.4 대체 품목 절감 시나리오 — NEW
+  {title:"HP→Dell 노트북 전환 시 단가 절감",desc:"HP 평균 ₩170만 → Dell 동등 사양 ₩155만. 연 50대 기준.",impact:"₩750만",priority:"Medium",status:"미착수",type:"substitution",engine:"AI 유사사례+비교 분석",signal:"savings"},
+  // §3.2.5 수요 패턴 기반 절감 — NEW
+  {title:"분기별 일괄 발주 전환 (IT 소모품)",desc:"월별 소량 발주 → 분기 일괄 발주 시 물류비+단가 절감",impact:"₩480만",priority:"Low",status:"검토중",type:"demand_pattern",engine:"AI 수요패턴+비용 분석",signal:"savings"},
+  {title:"출장 TMC 일원화",desc:"항공+숙박+렌터카 통합 관리 시 수수료 절감",impact:"₩800만",priority:"Low",status:"검토중",type:"consolidation",engine:"AI 수요패턴 분석",signal:"savings"},
+];
+
+var MONTHLY=[
+  {m:"1월",v:14200},{m:"2월",v:15800},{m:"3월",v:16500},{m:"4월",v:15200},
+  {m:"5월",v:17100},{m:"6월",v:18300},{m:"7월",v:16800},{m:"8월",v:15400},
+  {m:"9월",v:17600},{m:"10월",v:19200},{m:"11월",v:18700},{m:"12월",v:16900},
+];
+var MAX_M=Math.max.apply(null,MONTHLY.map(function(m){return m.v;}));
+
+var SAVINGS_TYPE_LABEL={consolidation:"구매 통합",long_term:"장기 계약",renegotiation:"재협상",substitution:"대체 품목",demand_pattern:"수요 패턴"};
+var SEV_STYLE={HIGH:T.state.blocked,MEDIUM:T.state.review,LOW:{bg:T.surfAlt,fg:T.text.muted,accent:T.text.muted,border:T.border.light}};
+
+function App(){
+  var[tab,setTab]=useState("overview");
+  var[savingsFilter,setSavingsFilter]=useState("all");
+
+  var tabs=[
+    {id:"overview",label:"전체 현황",icon:"📊"},
+    {id:"anomaly",label:"이상 단가",icon:"🚨",count:ANOMALY_ALERTS.length+COMPETITION_ALERTS.length},
+    {id:"dept",label:"부서별",icon:"🏢"},
+    {id:"category",label:"품목별",icon:"📦"},
+    {id:"account",label:"계정별",icon:"💳"},
+    {id:"supplier",label:"공급사별",icon:"🏭"},
+    {id:"savings",label:"절감 기회",icon:"💡",count:SAVINGS_OPP.length},
+  ];
+
+  var filteredSavings=savingsFilter==="all"?SAVINGS_OPP:SAVINGS_OPP.filter(function(s){return s.type===savingsFilter;});
+
+  function RiskDot({level}){var c=level==="G"?T.state.complete.accent:level==="Y"?T.state.review.accent:T.state.blocked.accent;return <span style={{width:8,height:8,borderRadius:4,background:c,display:"inline-block"}}/>;}
+
+  return(
+  <div style={{width:"100%",height:"100%",background:"#E8ECF1",display:"flex",flexDirection:"column",fontFamily:T.font.sans,overflow:"hidden"}}>
+    <style>{`@import url('https://cdn.jsdelivr.net/gh/orioncactus/pretendard/dist/web/variable/pretendardvariable-dynamic-subset.css');*{box-sizing:border-box;margin:0;padding:0}::-webkit-scrollbar{width:5px}::-webkit-scrollbar-track{background:transparent}::-webkit-scrollbar-thumb{background:${T.border.light};border-radius:3px}button{cursor:pointer;font-family:inherit;transition:all .15s}button:hover:not(:disabled){filter:brightness(1.05)}`}</style>
+
+    {/* ERP Shell */}
+    <div style={{height:28,background:"#2D3748",display:"flex",alignItems:"center",padding:"0 14px",gap:6,flexShrink:0}}>
+      <div style={{display:"flex",gap:4}}><div style={{width:8,height:8,borderRadius:4,background:"#FC5C65"}}/><div style={{width:8,height:8,borderRadius:4,background:"#FED330"}}/><div style={{width:8,height:8,borderRadius:4,background:"#26DE81"}}/></div>
+      <span style={{color:"#A0AEC0",fontSize:10,fontWeight:500,marginLeft:8}}>AI Embedded BSM PRO — Spend Analytics (SCRL Service)</span>
+    </div>
+
+    {/* Floating Card */}
+    <div style={{flex:1,display:"flex",alignItems:"center",justifyContent:"center",padding:12,overflow:"hidden"}}>
+    <div style={{width:"100%",maxWidth:1060,height:"100%",maxHeight:"88%",display:"flex",flexDirection:"column",borderRadius:T.radius.xl,overflow:"hidden",boxShadow:"0 24px 80px rgba(0,0,0,.35)",background:T.surface}}>
+
+      {/* Header */}
+      <div style={{padding:"10px 20px",background:"linear-gradient(135deg,#1E3A8A,#7C3AED)",display:"flex",alignItems:"center",justifyContent:"space-between",flexShrink:0}}>
+        <div style={{display:"flex",alignItems:"center",gap:10}}>
+          <div style={{width:32,height:32,borderRadius:8,background:"rgba(255,255,255,.15)",display:"flex",alignItems:"center",justifyContent:"center",fontSize:16}}>📊</div>
+          <div><div style={{fontWeight:700,fontSize:16,color:"#FFF",letterSpacing:-0.5,display:"flex",alignItems:"center",gap:8}}><span>Spend Analytics</span><span style={{fontSize:12,fontWeight:400,opacity:.7}}>SCRL</span></div>
+          <div style={{fontSize:11,color:"rgba(255,255,255,.7)"}}>2025년 연간 · 기준일 2025-12-31 · 월 1회 갱신 · 간접구매 지출 분석</div></div>
+        </div>
+        <div style={{display:"flex",alignItems:"center",gap:8}}>
+          <Badge color="#FFF" bg="rgba(255,255,255,.2)">PRO</Badge>
+          <span style={{fontSize:12,color:"rgba(255,255,255,.7)"}}>최종: 2025-12-31</span>
+        </div>
+      </div>
+
+      {/* Tabs */}
+      <div style={{display:"flex",gap:0,borderBottom:"1px solid "+T.border.light,flexShrink:0,overflowX:"auto"}}>
+        {tabs.map(function(t){var ac=tab===t.id;return(
+          <button key={t.id} onClick={function(){setTab(t.id);}} style={{padding:"9px 14px",fontSize:12,fontWeight:ac?600:400,color:ac?T.brand:T.text.muted,background:"none",border:"none",borderBottom:ac?"2px solid "+T.brand:"2px solid transparent",display:"flex",alignItems:"center",gap:4,flexShrink:0,whiteSpace:"nowrap"}}>
+            <span style={{fontSize:11}}>{t.icon}</span>{t.label}
+            {t.count&&<span style={{fontSize:9,fontWeight:700,padding:"1px 5px",borderRadius:T.radius.full,background:t.id==="anomaly"?T.state.blocked.bg:T.state.complete.bg,color:t.id==="anomaly"?T.state.blocked.fg:T.state.complete.fg}}>{t.count}</span>}
+          </button>
+        );})}
+      </div>
+
+      {/* Body */}
+      <div style={{flex:1,overflowY:"auto",padding:16}}>
+
+        {/* ═══ Overview ═══ */}
+        {tab==="overview"&&<div>
+          <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr 1fr",gap:10,marginBottom:16}}>
+            {SUMMARY.map(function(s,i){return(
+              <div key={i} style={{padding:14,borderRadius:T.radius.md,background:T.surfAlt,border:"1px solid "+T.border.light}}>
+                <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:6}}>
+                  <span style={{fontSize:11,color:T.text.muted}}>{s.label}</span>
+                  <span style={{fontSize:16}}>{s.icon}</span>
+                </div>
+                <div style={{fontSize:20,fontWeight:700,color:s.color,letterSpacing:-0.5}}>{s.value}</div>
+                <div style={{fontSize:11,color:T.text.secondary,marginTop:4}}>{s.sub}</div>
+              </div>
+            );})}
+          </div>
+
+          {/* Monthly Trend */}
+          <div style={{padding:14,borderRadius:T.radius.md,background:T.surfAlt,border:"1px solid "+T.border.light,marginBottom:16}}>
+            <div style={{display:"flex",alignItems:"center",gap:6,fontSize:13,fontWeight:600,color:T.text.primary,marginBottom:4}}><span>월별 지출 추이</span><span style={{fontSize:11,fontWeight:400,color:T.text.muted}}>Time-Series</span></div>
+            <div style={{display:"flex",alignItems:"flex-end",gap:6,height:120}}>
+              {MONTHLY.map(function(m,i){var h=Math.round(m.v/MAX_M*100);return(
+                <div key={i} style={{flex:1,display:"flex",flexDirection:"column",alignItems:"center",gap:4}}>
+                  <span style={{fontSize:9,color:T.text.muted}}>{(m.v/10000).toFixed(1)}억</span>
+                  <div style={{width:"100%",height:h,borderRadius:4,background:i===MONTHLY.length-1?"#7C3AED":T.state.progress.accent,opacity:i===MONTHLY.length-1?1:0.6}}/>
+                  <span style={{fontSize:9,color:T.text.muted}}>{m.m}</span>
+                </div>
+              );})}
+            </div>
+          </div>
+
+          <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:12}}>
+            {/* Top 5 Suppliers */}
+            <div style={{padding:14,borderRadius:T.radius.md,background:T.surfAlt,border:"1px solid "+T.border.light}}>
+              <div style={{fontSize:13,fontWeight:600,color:T.text.primary,marginBottom:8}}>Top 5 공급사</div>
+              {SUPPLIER_TOP.map(function(s,i){return(
+                <div key={i} style={{display:"flex",alignItems:"center",gap:8,padding:"6px 0",borderBottom:i<4?"1px solid "+T.border.light:"none"}}>
+                  <span style={{fontSize:11,fontWeight:600,color:T.text.muted,width:18}}>{i+1}</span>
+                  <span style={{flex:1,fontSize:13,fontWeight:500,color:T.text.primary}}>{s.name}</span>
+                  <span style={{fontSize:13,fontWeight:600,color:T.brand}}>{s.amount}</span>
+                  <span style={{fontSize:11,color:T.text.muted}}>{s.share}</span>
+                </div>
+              );})}
+            </div>
+            {/* Price Risk Alert Quick */}
+            <div style={{padding:14,borderRadius:T.radius.md,background:T.surfAlt,border:"1px solid "+T.border.light}}>
+              <div style={{display:"flex",alignItems:"center",gap:6,marginBottom:8}}>
+                <span style={{fontSize:13,fontWeight:600,color:T.state.blocked.fg}}>Price Risk Alert</span>
+                <span style={{fontSize:11,fontWeight:400,color:T.text.muted}}>AI 자동 탐지</span>
+              </div>
+              {ANOMALY_ALERTS.filter(function(a){return a.severity==="HIGH";}).map(function(a,i){return(
+                <div key={i} style={{padding:"8px 10px",borderRadius:T.radius.sm,background:T.state.blocked.bg,border:"1px solid "+T.state.blocked.border,marginBottom:6,fontSize:12}}>
+                  <div style={{display:"flex",justifyContent:"space-between",alignItems:"center"}}>
+                    <span style={{fontWeight:600,color:T.state.blocked.fg}}>{a.item}</span>
+                    <span style={{fontWeight:700,color:T.state.blocked.accent}}>{a.deviation}</span>
+                  </div>
+                  <div style={{fontSize:11,color:T.state.blocked.fg,marginTop:2}}>{a.action}</div>
+                </div>
+              );})}
+              <button onClick={function(){setTab("anomaly");}} style={{width:"100%",padding:"6px 0",border:"none",background:"transparent",fontSize:11,color:T.brand,fontWeight:600,marginTop:4}}>{"이상단가 "+ANOMALY_ALERTS.length+"건 + 경쟁부재 "+COMPETITION_ALERTS.length+"건 →"}</button>
+            </div>
+          </div>
+        </div>}
+
+        {/* ═══ 이상 단가 탐지 (근거 강화) ═══ */}
+        {tab==="anomaly"&&<div>
+          {/* 판정 기준 표시 */}
+          <div style={{padding:10,borderRadius:T.radius.sm,background:"#F0F4FF",border:"1px solid #BFDBFE",fontSize:11,color:"#1E40AF",lineHeight:1.8,marginBottom:12}}>
+            📐 <b>판정 기준</b> — 계약가 대비: +10% 주의 / +20% 경고 · 시장가 대비: +15% 주의 / +30% 경고 · 3개월 연속 상승: 추세 경고 · 동일사양 공급사 편차: +30% 경고
+          </div>
+          <div style={{display:"flex",alignItems:"center",gap:6,marginBottom:12}}>
+            <span style={{fontSize:13,fontWeight:600,color:T.text.primary}}>이상 단가 Alert</span>
+            <span style={{fontSize:11,color:T.text.muted}}>{ANOMALY_ALERTS.length}건</span>
+          </div>
+
+          {ANOMALY_ALERTS.map(function(a,i){
+            var bc=a.severity==="HIGH"?"#FCA5A5":a.severity==="MEDIUM"?"#FCD34D":"#CBD5E1";
+            var fc=a.severity==="HIGH"?"#991B1B":a.severity==="MEDIUM"?"#92400E":"#475569";
+            var bgc=a.severity==="HIGH"?"#FEF2F2":a.severity==="MEDIUM"?"#FFFBEB":"#F8FAFC";
+            return(
+            <div key={i} style={{padding:14,borderRadius:10,background:"#F8FAFC",border:"2px solid "+bc,marginBottom:10}}>
+              <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",marginBottom:6}}>
+                <div style={{display:"flex",alignItems:"center",gap:8}}>
+                  <span style={{display:"inline-block",fontSize:10,fontWeight:600,padding:"2px 8px",borderRadius:9999,color:fc,background:bgc}}>{a.severity}</span>
+                  <span style={{fontSize:14,fontWeight:600,color:"#0F172A"}}>{a.item}</span>
+                </div>
+                <span style={{fontSize:18,fontWeight:700,color:fc}}>{a.deviation}</span>
+              </div>
+              {/* 가격 비교 */}
+              <div style={{display:"flex",gap:16,marginBottom:6}}>
+                <span style={{fontSize:11,color:"#64748B"}}>{"현재가: "+a.currentPrice}</span>
+                <span style={{fontSize:11,color:"#64748B"}}>{"기준가: "+a.contractPrice}</span>
+                <span style={{fontSize:11,color:"#64748B"}}>{"공급사: "+a.vendor}</span>
+              </div>
+              {/* 초과 금액 — 핵심 */}
+              {a.overAmount&&<div style={{padding:"6px 10px",borderRadius:6,background:bgc,border:"1px solid "+bc,fontSize:12,fontWeight:600,color:fc,marginBottom:6}}>
+                💰 초과 금액: {a.overAmount}
+              </div>}
+              {/* 근거 3줄 */}
+              <div style={{padding:"8px 10px",borderRadius:6,background:"#FFF",border:"1px solid #E2E8F0",marginBottom:6,fontSize:11,lineHeight:1.8,color:"#475569"}}>
+                <div>📏 <b>비교 기준:</b> {a.baseline||"—"}</div>
+                <div>⚖️ <b>판정 근거:</b> {a.threshold||"—"}</div>
+                <div>🔍 <b>원인 분석:</b> {a.cause||"—"}</div>
+              </div>
+              {/* 조치 */}
+              <div style={{display:"flex",justifyContent:"space-between",alignItems:"center"}}>
+                <span style={{fontSize:10,color:"#64748B"}}>{"분석: "+a.engine}</span>
+                <span style={{padding:"4px 10px",borderRadius:6,background:bgc,border:"1px solid "+bc,fontSize:11,fontWeight:500,color:fc}}>{"→ "+a.action}</span>
+              </div>
+            </div>
+          );})}
+
+          {/* 경쟁 부재 경고 (분리) */}
+          <div style={{marginTop:16,paddingTop:16,borderTop:"2px dashed #CBD5E1"}}>
+            <div style={{display:"flex",alignItems:"center",gap:6,marginBottom:10}}>
+              <span style={{fontSize:13,fontWeight:600,color:T.state.review.fg}}>⚠️ 경쟁 부재 경고</span>
+              <span style={{fontSize:10,color:T.text.muted}}>(가격이 아닌 구매 방식 문제)</span>
+              <span style={{fontSize:11,color:T.text.muted}}>{COMPETITION_ALERTS.length}건</span>
+            </div>
+            {COMPETITION_ALERTS.map(function(a,i){return(
+              <div key={i} style={{padding:14,borderRadius:10,background:"#FFFBEB",border:"2px solid #FCD34D",marginBottom:8}}>
+                <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",marginBottom:6}}>
+                  <div style={{display:"flex",alignItems:"center",gap:8}}>
+                    <span style={{display:"inline-block",fontSize:10,fontWeight:600,padding:"2px 8px",borderRadius:9999,color:"#92400E",background:"#FFFBEB"}}>경쟁부재</span>
+                    <span style={{fontSize:14,fontWeight:600,color:"#0F172A"}}>{a.item}</span>
+                  </div>
+                  <span style={{fontSize:14,fontWeight:700,color:"#92400E"}}>{a.renewalCount}</span>
+                </div>
+                <div style={{display:"flex",gap:16,marginBottom:6}}>
+                  <span style={{fontSize:11,color:"#64748B"}}>{"현재가: "+a.currentPrice}</span>
+                  <span style={{fontSize:11,color:"#64748B"}}>{"공급사: "+a.vendor}</span>
+                </div>
+                <div style={{padding:"8px 10px",borderRadius:6,background:"#FFF",border:"1px solid #E2E8F0",marginBottom:6,fontSize:11,lineHeight:1.8,color:"#475569"}}>
+                  <div>📏 <b>비교 기준:</b> {a.baseline||"—"}</div>
+                  <div>⚖️ <b>판정 근거:</b> {a.threshold||"—"}</div>
+                  <div>🔍 <b>원인 분석:</b> {a.cause||"—"}</div>
+                </div>
+                <div style={{display:"flex",justifyContent:"space-between",alignItems:"center"}}>
+                  <span style={{fontSize:10,color:"#64748B"}}>{"분석: "+a.engine}</span>
+                  <span style={{padding:"4px 10px",borderRadius:6,background:"#FFFBEB",border:"1px solid #FCD34D",fontSize:11,fontWeight:500,color:"#92400E"}}>{"→ "+a.action}</span>
+                </div>
+              </div>
+            );})}
+          </div>
+
+          <div style={{padding:10,borderRadius:T.radius.sm,background:T.surfAlt,border:"1px solid "+T.border.light,fontSize:11,color:T.text.secondary,lineHeight:1.6,marginTop:10}}>
+            ℹ️ 이상 단가는 AI가 자동 탐지합니다. 경쟁 부재 경고는 가격이 아닌 '구매 방식'의 문제로 별도 분류됩니다. 기준일: 2025-12-31 / 갱신 주기: 월 1회.
+          </div>
+        </div>}
+
+        {/* ═══ 부서별 §3.3.3 ═══ */}
+        {tab==="dept"&&<div>
+          <div style={{fontSize:13,fontWeight:600,color:T.text.primary,marginBottom:10}}>부서별 지출 현황</div>
+          {DEPT_SPEND.map(function(d,i){var barW=Math.round(d.pct*2.5);return(
+            <div key={i} style={{padding:12,borderRadius:T.radius.md,background:T.surfAlt,border:"1px solid "+T.border.light,marginBottom:8}}>
+              <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:6}}>
+                <span style={{fontSize:14,fontWeight:600,color:T.text.primary}}>{d.dept}</span>
+                <div style={{display:"flex",alignItems:"center",gap:8}}>
+                  <span style={{fontSize:15,fontWeight:700,color:T.brand}}>₩{(d.amount/10000).toFixed(1)}억</span>
+                  <Badge color={d.change<0?T.state.complete.fg:d.change>0?T.state.blocked.fg:T.text.muted} bg={d.change<0?T.state.complete.bg:d.change>0?T.state.blocked.bg:T.surfAlt}>{d.change>0?"+":""}{d.change}%</Badge>
+                </div>
+              </div>
+              <div style={{display:"flex",alignItems:"center",gap:8}}>
+                <div style={{flex:1,height:6,background:T.border.light,borderRadius:3}}><div style={{width:barW+"%",height:6,borderRadius:3,background:T.state.progress.accent}}/></div>
+                <span style={{fontSize:11,color:T.text.muted,minWidth:36}}>{d.pct}%</span>
+              </div>
+              <div style={{fontSize:11,color:T.text.secondary,marginTop:4}}>최대 항목: {d.top}</div>
+            </div>
+          );})}
+        </div>}
+
+        {/* ═══ 품목별 §3.3.2 ═══ */}
+        {tab==="category"&&<div>
+          <div style={{fontSize:13,fontWeight:600,color:T.text.primary,marginBottom:10}}>품목별 지출 현황</div>
+          {CATEGORY_SPEND.map(function(c,i){var barW=Math.round(c.pct*2.5);return(
+            <div key={i} style={{display:"flex",alignItems:"center",gap:10,padding:"10px 12px",borderRadius:T.radius.md,background:T.surfAlt,border:"1px solid "+T.border.light,marginBottom:6}}>
+              <span style={{fontSize:11,fontWeight:600,color:T.text.muted,width:18}}>{i+1}</span>
+              <div style={{flex:1}}>
+                <div style={{display:"flex",justifyContent:"space-between",marginBottom:4}}>
+                  <span style={{fontSize:13,fontWeight:500,color:T.text.primary}}>{c.cat}</span>
+                  <span style={{fontSize:13,fontWeight:600,color:T.brand}}>{c.amount}</span>
+                </div>
+                <div style={{display:"flex",alignItems:"center",gap:8}}>
+                  <div style={{flex:1,height:4,background:T.border.light,borderRadius:2}}><div style={{width:barW+"%",height:4,borderRadius:2,background:"#7C3AED"}}/></div>
+                  <span style={{fontSize:10,color:T.text.muted}}>{c.pct}%</span>
+                  <Badge color={T.text.secondary} bg={T.surfAlt}>{c.gt}</Badge>
+                  <span style={{fontSize:12}}>{c.trend}</span>
+                </div>
+              </div>
+            </div>
+          );})}
+        </div>}
+
+        {/* ═══ NEW: 계정별 §3.3.1 ═══ */}
+        {tab==="account"&&<div>
+          <div style={{fontSize:13,fontWeight:600,color:T.text.primary,marginBottom:10}}>계정별 비용 구조</div>
+          {ACCOUNT_SPEND.map(function(a,i){var usageColor=a.usage>=100?T.state.blocked:a.usage>=90?T.state.review:T.state.complete;var barW=Math.min(a.usage,120);return(
+            <div key={i} style={{padding:12,borderRadius:T.radius.md,background:T.surfAlt,border:"1px solid "+T.border.light,marginBottom:8}}>
+              <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:6}}>
+                <div>
+                  <span style={{fontSize:14,fontWeight:600,color:T.text.primary}}>{a.name}</span>
+                  <span style={{fontSize:11,color:T.text.muted,marginLeft:8}}>#{a.code}</span>
+                </div>
+                <div style={{display:"flex",alignItems:"center",gap:8}}>
+                  <span style={{fontSize:15,fontWeight:700,color:T.brand}}>₩{(a.amount/10000).toFixed(1)}억</span>
+                  <span style={{fontSize:11,color:T.text.muted}}>/ ₩{(a.budget/10000).toFixed(1)}억</span>
+                  <Badge color={usageColor.fg} bg={usageColor.bg}>{a.usage.toFixed(1)}%</Badge>
+                </div>
+              </div>
+              <div style={{display:"flex",alignItems:"center",gap:8}}>
+                <div style={{flex:1,height:8,background:T.border.light,borderRadius:4,position:"relative"}}>
+                  <div style={{width:Math.min(barW,100)+"%",height:8,borderRadius:4,background:usageColor.accent}}/>
+                  {a.usage<100&&<div style={{position:"absolute",left:"100%",top:-2,width:1,height:12,background:T.text.muted,opacity:.3}}/>}
+                </div>
+                <span style={{fontSize:11,color:usageColor.fg,fontWeight:600,minWidth:50}}>{a.usage>=100?"초과":"잔여 "+(100-a.usage).toFixed(0)+"%"}</span>
+              </div>
+            </div>
+          );})}
+          <div style={{padding:10,borderRadius:T.radius.sm,background:T.state.review.bg,border:"1px solid "+T.state.review.border,fontSize:11,color:T.state.review.fg,lineHeight:1.6}}>
+            ⚠️ 물류비(#5600) 예산 120% 초과 — 추가 예산 배정 또는 지출 통제 필요. 시설관리비(#5200) 95% 도달 — 잔여 분기 지출 모니터링 권장.
+          </div>
+        </div>}
+
+        {/* ═══ 공급사별 §3.3.5 ═══ */}
+        {tab==="supplier"&&<div>
+          <div style={{fontSize:13,fontWeight:600,color:T.text.primary,marginBottom:10}}>공급사별 지출 분석</div>
+          {SUPPLIER_TOP.map(function(s,i){return(
+            <div key={i} style={{padding:12,borderRadius:T.radius.md,background:T.surfAlt,border:"1px solid "+T.border.light,marginBottom:8}}>
+              <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:6}}>
+                <div>
+                  <span style={{fontSize:14,fontWeight:600,color:T.text.primary}}>{s.name}</span>
+                  <span style={{fontSize:11,color:T.text.muted,marginLeft:8}}>점유율 {s.share}</span>
+                </div>
+                <div style={{display:"flex",alignItems:"center",gap:8}}>
+                  <span style={{fontSize:16,fontWeight:700,color:T.brand}}>{s.amount}</span>
+                  <div style={{display:"flex",gap:2}}>{["fin","del","qual","esg"].map(function(k){return <RiskDot key={k} level={s.riskScores[k]}/>;})}</div>
+                </div>
+              </div>
+              <div style={{display:"flex",gap:12,fontSize:11}}>
+                <span style={{color:T.text.secondary}}>계약 {s.contracts}건</span>
+                <span style={{color:s.risk==="낮음"?T.state.complete.fg:T.state.review.fg}}>리스크: {s.risk}</span>
+                <span style={{color:T.text.muted}}>추세: {s.trend==="stable"?"안정":"증가"}</span>
+              </div>
+            </div>
+          );})}
+
+          <div style={{padding:12,borderRadius:T.radius.md,background:T.state.review.bg,border:"1px solid "+T.state.review.border,marginTop:12}}>
+            <div style={{fontSize:12,fontWeight:600,color:T.state.review.fg,marginBottom:4,display:"flex",alignItems:"center",gap:6}}>
+              <span>공급사 집중도 경고</span>
+              <SigBadge type="competitive"/>
+            </div>
+            <div style={{fontSize:12,color:T.state.review.fg,lineHeight:1.6}}>상위 3개 공급사 점유율 34.2% — 특정 공급사 의존도가 높습니다. Competitive Sourcing Signal: "공급사 집중도 과다" (Signal Def. §5.1.4). 대체 공급사 확보를 권장합니다.</div>
+          </div>
+        </div>}
+
+        {/* ═══ 절감 기회 §3.2 (5종 완전) ═══ */}
+        {tab==="savings"&&<div>
+          <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:12}}>
+            <div style={{fontSize:13,fontWeight:600,color:T.text.primary}}>절감 기회 분석</div>
+            <div style={{padding:"6px 14px",borderRadius:T.radius.md,background:T.state.complete.bg,border:"1px solid "+T.state.complete.border}}>
+              <span style={{fontSize:12,fontWeight:600,color:T.state.complete.fg}}>총 절감 가능액: ₩{(SAVINGS_OPP.reduce(function(s,o){var n=o.impact.replace(/[^0-9]/g,"");return s+parseInt(n||0);},0)/10000).toFixed(1)}억</span>
+            </div>
+          </div>
+
+          {/* Filter */}
+          <div style={{display:"flex",gap:4,marginBottom:12,flexWrap:"wrap"}}>
+            {[{id:"all",l:"전체"},{id:"consolidation",l:"§3.2.1 구매 통합"},{id:"long_term",l:"§3.2.2 장기 계약"},{id:"renegotiation",l:"§3.2.3 재협상"},{id:"substitution",l:"§3.2.4 대체 품목"},{id:"demand_pattern",l:"§3.2.5 수요 패턴"}].map(function(f){return(
+              <button key={f.id} onClick={function(){setSavingsFilter(f.id);}} style={{padding:"4px 10px",borderRadius:T.radius.full,border:savingsFilter===f.id?"none":"1px solid "+T.border.medium,background:savingsFilter===f.id?T.brand:T.surface,color:savingsFilter===f.id?"#FFF":T.text.muted,fontSize:11,fontWeight:savingsFilter===f.id?600:400}}>{f.l}</button>
+            );})}
+          </div>
+
+          {filteredSavings.map(function(s,i){var pc=s.priority==="High"?T.state.blocked:s.priority==="Medium"?T.state.review:{bg:T.surfAlt,fg:T.text.muted,accent:T.text.muted,border:T.border.light};return(
+            <div key={i} style={{padding:14,borderRadius:T.radius.md,background:T.surfAlt,border:"1px solid "+T.border.light,marginBottom:8}}>
+              <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:6}}>
+                <div style={{display:"flex",alignItems:"center",gap:6}}>
+                  <span style={{fontSize:14,fontWeight:600,color:T.text.primary}}>{s.title}</span>
+                  <Badge color={pc.fg} bg={pc.bg}>{s.priority}</Badge>
+                  <Badge color={T.text.secondary} bg={T.surfAlt}>{s.status}</Badge>
+                  <Badge color={T.state.progress.fg} bg={T.state.progress.bg}>{SAVINGS_TYPE_LABEL[s.type]||s.type}</Badge>
+                </div>
+                <span style={{fontSize:16,fontWeight:700,color:T.state.complete.accent}}>{s.impact}</span>
+              </div>
+              <div style={{fontSize:12,color:T.text.secondary,lineHeight:1.6}}>{s.desc}</div>
+              <div style={{display:"flex",alignItems:"center",gap:6,fontSize:10,color:T.text.muted,marginTop:4}}>
+                <span>{"분석: "+s.engine}</span>
+                <SigBadge type={s.signal}/>
+              </div>
+            </div>
+          );})}
+
+          <div style={{padding:10,borderRadius:T.radius.sm,background:"#F0F4FF",border:"1px solid #BFDBFE",fontSize:11,color:"#1E40AF",lineHeight:1.6,marginTop:8}}>
+            ℹ️ 절감 기회는 AI가 수요 패턴, 유사 사례, 비용 비교, 이상 탐지를 조합하여 자동 탐지합니다. AI는 기회를 '발견'만 하고, 실행 여부는 구매팀이 결정합니다.
+          </div>
+        </div>}
+
+      </div>
+    </div>
+    </div>
+  </div>);
+}
+
+
+ReactDOM.createRoot(document.getElementById('root')).render(React.createElement(App));
+</script>
+</body>
+</html>
